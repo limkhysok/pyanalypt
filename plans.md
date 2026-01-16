@@ -5,7 +5,7 @@ A modern "Headless" approach where the frontend and backend are independent, bac
 
 *   **Frontend:** React (TypeScript) + NextJS + (Shadcn UI for components like buttons..) (Apache ECharts for Visualization)
 *   **Backend:** Django + Django Rest Framework (DRF).
-*   **Database:** PostgreSQL (Cloud Database supabase.com).
+*   **Database:** PostgreSQL (Local Database).
 *   **Data Processing:** Pandas + Scikit-Learn.
 *   **Cache:** Redis (for high-speed DataFrame access).
 
@@ -14,7 +14,7 @@ A modern "Headless" approach where the frontend and backend are independent, bac
 ## Phase 1: Persistence Layer (PostgreSQL Setup)
 **Goal:** Establish a permanent source of truth for files, users, and analysis results.
 
-1.  **Database Connection:** Initialize PostgreSQL with psycopg2.
+1.  **Database Connection:** Initialize PostgreSQL
 2.  **Schema Design:**
     *   `UserFile` Model: Store file metadata (original name, file size, storage path).
     *   `AnalysisResult` Model: Use a **JSONB** column to store summary statistics (mean, median, min/max) so you don't have to re-calculate them using Pandas every time the page loads.

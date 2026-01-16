@@ -1,0 +1,14 @@
+Django
+djangorestframework
+pandas
+scikit-learn
+openpyxl
+psycopg2-binary
+django-cors-headers
+django-environ
+redis
+django-redis
+kaleido
+pyarrow
+lxml
+defusedxml
