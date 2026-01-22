@@ -3,7 +3,7 @@ djangorestframework
 pandas
 scikit-learn
 openpyxl
-psycopg2-binary
+psycopg[binary]
 django-cors-headers
 django-environ
 redis

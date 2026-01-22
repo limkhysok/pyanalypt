@@ -1,0 +1,5 @@
+name=pyanalyptdb
+hostname/address=pyanalyptdb
+port=5432
+user=pyanalyptdbXlimkhi
+password=pyanalyptdbXlimkhi123

@@ -5,7 +5,7 @@ A modern "Headless" approach where the frontend and backend are independent, bac
 
 *   **Frontend:** React (TypeScript) + NextJS + (Shadcn UI for components like buttons..) (Apache ECharts for Visualization)
 *   **Backend:** Django + Django Rest Framework (DRF).
-*   **Database:** PostgreSQL (Local Database).
+*   **Database:** PostgreSQL (Local Database) Psycopg 3.
 *   **Data Processing:** Pandas + Scikit-Learn.
 *   **Cache:** Redis (for high-speed DataFrame access).
 
