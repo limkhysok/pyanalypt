@@ -12,8 +12,18 @@ class UserFile(models.Model):
     file = models.FileField(upload_to="uploads/%Y/%m/%d/")
     original_filename = models.CharField(max_length=255)
     file_size = models.BigIntegerField(help_text="Size in bytes")
-    # session_id maps the file to a specific browser session
-    session_id = models.CharField(max_length=255, db_index=True)
+
+    # Ownership
+    user = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="files",
+    )
+    # session_id maps the file to a specific browser session (for anonymous/guest users)
+    session_id = models.CharField(max_length=255, db_index=True, null=True, blank=True)
+
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
