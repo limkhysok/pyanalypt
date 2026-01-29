@@ -7,65 +7,66 @@ Base URL: `http://localhost:8000/api`
 ### 1. Register New User
 Creates a new user account.
 
-*   **Endpoint:** `/auth/register/`
+*   **Endpoint:** `/auth/registration/` (Updated for dj-rest-auth)
 *   **Method:** `POST`
 *   **Auth Required:** No
 *   **Body:**
     ```json
     {
-      "username": "johndoe",
+      "username": "johndoe", (Optional if email is primary)
       "email": "john@example.com",
-      "password": "strongpassword123"
+      "password1": "strongpassword123",
+      "password2": "strongpassword123" (Optional validation)
     }
     ```
 *   **Response (201 Created):**
     ```json
     {
-      "username": "johndoe",
-      "email": "john@example.com"
-      // Note: Password is never returned
+      "access": "eyJ...",
+      "refresh": "eyJ...",
+      "user": {
+          "pk": 1,
+          "username": "",
+          "email": "john@example.com",
+          "first_name": "",
+          "last_name": ""
+      }
     }
     ```
 
 ### 2. Login (Get Token)
-Exchanges user credentials for access and refresh tokens.
-
 *   **Endpoint:** `/auth/login/`
 *   **Method:** `POST`
-*   **Auth Required:** No
 *   **Body:**
     ```json
     {
-      "username": "johndoe",
+      "email": "john@example.com",
       "password": "strongpassword123"
     }
     ```
 *   **Response (200 OK):**
     ```json
     {
-      "refresh": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1...",
-      "access": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1..."
+      "access": "eyJ...",
+      "refresh": "eyJ...",
+      "user": { ... }
     }
     ```
 
-### 3. Refresh Token
-Get a new access token using a valid refresh token.
-
-*   **Endpoint:** `/auth/refresh/`
+### 3. Google Login
+*   **Endpoint:** `/auth/google/`
 *   **Method:** `POST`
-*   **Auth Required:** No
 *   **Body:**
     ```json
     {
-      "refresh": "your_refresh_token_here"
+      "access_token": "GOOGLE_ACCESS_TOKEN_FROM_FRONTEND"
     }
     ```
-*   **Response (200 OK):**
-    ```json
-    {
-      "access": "new_access_token_here"
-    }
-    ```
+
+### 4. Logout
+*   **Endpoint:** `/auth/logout/`
+*   **Method:** `POST`
+
 
 ### 4. Get Current User
 Retrieve details of the currently logged-in user.

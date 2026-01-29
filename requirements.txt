@@ -13,3 +13,7 @@ pyarrow
 lxml
 defusedxml
 djangorestframework-simplejwt
+dj-rest-auth
+django-allauth
+requests
+cryptography
