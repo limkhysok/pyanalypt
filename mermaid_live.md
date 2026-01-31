@@ -1,15 +1,15 @@
 erDiagram
     auth_user {
         int id PK
-        string password
-        datetime last_login
-        boolean is_superuser
         string username
-        string first_name
-        string last_name
+        string full_name
+        string password
+        boolean is_superuser
+        string profile_picture
         string email
         boolean is_staff
         boolean is_active
+        datetime last_login
         datetime date_joined
     }
 
@@ -72,9 +72,17 @@ erDiagram
         string name
         datetime applied
     }
+    social_auth_usersocialauth {
+        int id PK
+        int user_id FK
+        string provider
+        string uid
+        json extra_data
+    }
 
     %% AUTH RELATIONSHIPS
     auth_user ||--o{ auth_user_groups : "many-to-many"
+    auth_user ||--o{ social_auth_usersocialauth : "identifies_as"
     auth_group ||--o{ auth_user_groups : "many-to-many"
 
     auth_group ||--o{ auth_group_permissions : has
