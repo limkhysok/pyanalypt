@@ -6,9 +6,10 @@ from django.db import models
 
 class AuthGroupPermissions(models.Model):
     id = models.AutoField(primary_key=True)
-    group_id = models.IntegerField()  # FK to auth_group
-    permission_id = models.IntegerField()  # FK to auth_permission
+    group = models.ForeignKey("AuthGroup", on_delete=models.DO_NOTHING)
+    permission = models.ForeignKey("AuthPermission", on_delete=models.DO_NOTHING)
 
     class Meta:
         managed = False
         db_table = "auth_group_permissions"
+        unique_together = (("group", "permission"),)

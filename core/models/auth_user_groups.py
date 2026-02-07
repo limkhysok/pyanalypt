@@ -6,9 +6,10 @@ from django.db import models
 
 class AuthUserGroups(models.Model):
     id = models.AutoField(primary_key=True)
-    user_id = models.IntegerField()  # FK to auth_user
-    group_id = models.IntegerField()  # FK to auth_group
+    user = models.ForeignKey("AuthUser", on_delete=models.DO_NOTHING)
+    group = models.ForeignKey("AuthGroup", on_delete=models.DO_NOTHING)
 
     class Meta:
         managed = False
         db_table = "auth_user_groups"
+        unique_together = (("user", "group"),)

@@ -72,17 +72,20 @@ erDiagram
         string name
         datetime applied
     }
-    social_auth_usersocialauth {
+    
+    socialaccount_socialaccount {
         int id PK
         int user_id FK
         string provider
         string uid
         json extra_data
+        datetime last_login
+        datetime date_joined
     }
 
     %% AUTH RELATIONSHIPS
     auth_user ||--o{ auth_user_groups : "many-to-many"
-    auth_user ||--o{ social_auth_usersocialauth : "identifies_as"
+    auth_user ||--o{ socialaccount_socialaccount : "linked_to"
     auth_group ||--o{ auth_user_groups : "many-to-many"
 
     auth_group ||--o{ auth_group_permissions : has
