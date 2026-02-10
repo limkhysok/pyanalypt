@@ -105,19 +105,72 @@ DATABASES = {
     "default": env.db(),
 }
 
-# Caching (Redis)
-CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": env("REDIS_URL"),
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
+# Caching Configuration
+# Development: In-memory cache (no Redis needed)
+# Production: Redis cache
+if DEBUG:
+    # Use local memory cache for development (no Redis required)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "unique-snowflake",
+        }
     }
-}
+else:
+    # Use Redis for production
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": env("REDIS_URL"),
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            },
+        }
+    }
 
-# CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = True  # For local development convenience
+
+# ===== CORS CONFIGURATION =====
+# Cross-Origin Resource Sharing settings for API access
+# Development: Allow all origins (for testing with localhost, Postman, etc.)
+# Production: Restrict to specific frontend domains
+
+if DEBUG:
+    # Development: Allow all origins for convenience
+    CORS_ALLOW_ALL_ORIGINS = True
+    CORS_ALLOW_CREDENTIALS = True
+else:
+    # Production: Only allow specific origins
+    CORS_ALLOWED_ORIGINS = env.list(
+        "CORS_ALLOWED_ORIGINS",
+        default=[
+            "https://yourdomain.com",
+            "https://www.yourdomain.com",
+        ],
+    )
+    CORS_ALLOW_CREDENTIALS = True
+
+# Methods allowed for CORS requests
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
+
+# Headers allowed in CORS requests
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+]
 
 
 # Password validation
@@ -168,6 +221,22 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 
 USE_TZ = True
+
+
+# ===== EMAIL CONFIGURATION =====
+# For development: Print emails to console instead of sending them
+# For production: Configure SMTP settings in .env
+if DEBUG:
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+else:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = env("EMAIL_HOST", default="smtp.gmail.com")
+    EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+    EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+    EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+    EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@pyanalypt.com")
 
 
 # Static files (CSS, JavaScript, Images)

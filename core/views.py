@@ -5,11 +5,10 @@ Authentication is handled by dj-rest-auth.
 Add your custom views here as needed.
 """
 
-from rest_framework import generics, permissions
-
-
 # Add your custom views here
 # Example:
+#
+# from rest_framework import generics, permissions
 #
 # class UserListView(generics.ListAPIView):
 #     """List all users (admin only)"""

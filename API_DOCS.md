@@ -79,7 +79,73 @@ Obtain JWT tokens by logging in with email and password.
 
 ---
 
-### 3. Logout
+### 3. Google OAuth Login
+Login or register using Google account (for frontend applications).
+
+- **Endpoint**: `POST /auth/google/`
+- **Auth Required**: No
+- **Request Body**:
+```json
+{
+  "access_token": "ya29.a0AfH6SMBx..." 
+}
+```
+
+**How it works:**
+1. Frontend uses Google Sign-In to get `access_token`
+2. Frontend sends `access_token` to this endpoint
+3. Backend validates token with Google
+4. Backend creates/updates user with Google data
+5. Backend returns JWT tokens
+
+- **Response (200 OK)**:
+```json
+{
+  "access": "eyJ0eXAiOiJKV1Qi...",
+  "refresh": "eyJ0eXAiOiJKV1Qi...",
+  "user": {
+    "pk": 5,
+    "email": "user@gmail.com",
+    "username": "user",
+    "first_name": "John",
+    "last_name": "Doe",
+    "full_name": "John Doe",
+    "profile_picture": "https://lh3.googleusercontent.com/...",
+    "email_verified": true
+  }
+}
+```
+
+**Frontend Integration Example (React):**
+```javascript
+import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
+
+function GoogleLoginButton() {
+  const login = useGoogleLogin({
+    onSuccess: async (tokenResponse) => {
+      // Send access_token to your backend
+      const response = await fetch('http://localhost:8000/api/v1/auth/google/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          access_token: tokenResponse.access_token
+        })
+      });
+      
+      const data = await response.json();
+      // Save JWT tokens
+      localStorage.setItem('access', data.access);
+      localStorage.setItem('refresh', data.refresh);
+    }
+  });
+
+  return <button onClick={() => login()}>Sign in with Google</button>;
+}
+```
+
+---
+
+### 4. Logout
 Logout and blacklist the current refresh token.
 
 - **Endpoint**: `POST /auth/logout/`
@@ -93,7 +159,7 @@ Logout and blacklist the current refresh token.
 
 ---
 
-### 4. Get Current User
+### 5. Get Current User
 Retrieve details of the currently authenticated user.
 
 - **Endpoint**: `GET /auth/user/`

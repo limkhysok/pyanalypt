@@ -1,24 +1,31 @@
+"""
+Custom Serializers
+
+Note: Authentication serializers are handled by dj-rest-auth.
+These are kept for reference or future custom endpoints.
+"""
+
 from rest_framework import serializers
-from django.contrib.auth.models import User
+from .models import AuthUser
 
 
 class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ("id", "username", "email")
-
-
-class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
+    """Serializer for AuthUser model"""
 
     class Meta:
-        model = User
-        fields = ("username", "password", "email")
-
-    def create(self, validated_data):
-        user = User.objects.create_user(
-            username=validated_data["username"],
-            email=validated_data.get("email", ""),
-            password=validated_data["password"],
+        model = AuthUser
+        fields = (
+            "id",
+            "email",
+            "username",
+            "first_name",
+            "last_name",
+            "full_name",
+            "profile_picture",
+            "email_verified",
+            "is_staff",
+            "is_active",
+            "date_joined",
+            "last_login",
         )
-        return user
+        read_only_fields = ("id", "email_verified", "date_joined", "last_login")
