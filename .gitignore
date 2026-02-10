@@ -2,6 +2,11 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
 
 # Django
 *.log
@@ -9,24 +14,47 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 media/
+staticfiles/
+uploads/
 
-# Environment Variables (CRITICAL)
+# Environment Variables (CRITICAL - DO NOT COMMIT!)
 .env
+.env.*
+!.env.example
 
 # Virtual Environment
 venv/
 env/
 .venv/
+ENV/
+env.bak/
+venv.bak/
 
 # IDEs and Editors
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+.project
+.pydevproject
+.settings/
 
 # OS Generated
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+desktop.ini
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
 
 # Frontend (Future proofing)
 node_modules/
@@ -36,3 +64,17 @@ dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Database utilities (local only)
+drop_tables.py
+list_tables.py
+check_*.py
+test_*.py
+
+# Temporary and backup files
+*.bak
+*.tmp
+*_backup.py
+*.orig

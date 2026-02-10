@@ -1,23 +1,32 @@
 erDiagram
     auth_user {
         int id PK
+        string first_name
+        string last_name
         string username
         string full_name
         string password
         boolean is_superuser
         string profile_picture
         string email
+        boolean email_verified
+        string profile_picture
         boolean is_staff
         boolean is_active
-        datetime last_login
         datetime date_joined
+        datetime last_login
+
     }
 
     auth_group {
         int id PK
         string name
     }
-
+    auth_group_permissions {
+        int id PK
+        int group_id FK
+        int permission_id FK
+    }
     auth_permission {
         int id PK
         string name
@@ -27,28 +36,14 @@ erDiagram
 
     auth_user_groups {
         int id PK
-        int user_id FK
+        int authuser_id FK
         int group_id FK
     }
-
-    auth_group_permissions {
-        int id PK
-        int group_id FK
-        int permission_id FK
-    }
-
     auth_user_user_permissions {
         int id PK
-        int user_id FK
+        int authuser_id FK
         int permission_id FK
     }
-
-    django_content_type {
-        int id PK
-        string app_label
-        string model
-    }
-
     django_admin_log {
         int id PK
         datetime action_time
@@ -59,11 +54,20 @@ erDiagram
         int content_type_id FK
         int user_id FK
     }
-
+    django_content_type {
+        int id PK
+        string app_label
+        string model
+    }
     django_session {
         string session_key PK
         text session_data
         datetime expire_date
+    }
+    django_site {
+        int id PK
+        string domain
+        string name
     }
 
     django_migrations {
