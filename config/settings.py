@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "corsheaders",
     # Auth & Social Login
     "dj_rest_auth",
+    "dj_rest_auth.registration",  # Required for registration endpoints
     "allauth",
     "allauth.account",
     "allauth.socialaccount",
@@ -69,6 +70,12 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "allauth.account.middleware.AccountMiddleware",
+]
+
+## Authentication Backends
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "allauth.account.auth_backends.AuthenticationBackend",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -168,14 +175,54 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 
+# Default primary key field type
+# https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Custom User Model
+AUTH_USER_MODEL = "core.AuthUser"
+
 # --- Allauth & Social Auth Configuration ---
 SITE_ID = 1
 
-# User Model Config
-ACCOUNT_USER_MODEL_USERNAME_FIELD = None
+# ===== ALLAUTH ACCOUNT SETTINGS =====
+# Signup/Login Configuration
+ACCOUNT_SIGNUP_FIELDS = [
+    "email*",  # Required
+    "username*",  # Required
+    "password1*",  # Required
+    "password2*",  # Required
+]
+
+# Authentication Method
 ACCOUNT_EMAIL_REQUIRED = True
-ACCOUNT_USERNAME_REQUIRED = False
-ACCOUNT_AUTHENTICATION_METHOD = "email"
+ACCOUNT_USERNAME_REQUIRED = True
+ACCOUNT_UNIQUE_EMAIL = True
+ACCOUNT_USER_MODEL_USERNAME_FIELD = "username"
+
+# Email Verification
+ACCOUNT_EMAIL_VERIFICATION = "optional"  # 'mandatory', 'optional', or 'none'
+ACCOUNT_EMAIL_CONFIRMATION_EXPIRE_DAYS = 3
+
+# Login/Logout
+ACCOUNT_LOGIN_ON_EMAIL_CONFIRMATION = True
+ACCOUNT_LOGOUT_ON_PASSWORD_CHANGE = False
+
+# Session Management
+ACCOUNT_SESSION_REMEMBER = True
+
+# ===== SOCIAL ACCOUNT SETTINGS =====
+# Auto-signup with social accounts (no additional form needed)
+SOCIALACCOUNT_AUTO_SIGNUP = True
+
+# Query email from social provider
+SOCIALACCOUNT_QUERY_EMAIL = True
+
+# Automatically link social accounts if email matches
+SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
+
+# Store extra data from provider (profile picture, name, etc.)
+SOCIALACCOUNT_STORE_TOKENS = True
 
 # JWT Configuration with dj-rest-auth
 REST_AUTH = {
@@ -184,15 +231,34 @@ REST_AUTH = {
     "JWT_AUTH_REFRESH_COOKIE": "pyanalypt-refresh-token",
 }
 
-# Social Account Providers
+# ===== SOCIAL ACCOUNT PROVIDERS =====
 SOCIALACCOUNT_PROVIDERS = {
     "google": {
         "SCOPE": [
             "profile",
             "email",
+            "openid",  # Required for OpenID Connect
         ],
         "AUTH_PARAMS": {
             "access_type": "online",
         },
+        "VERIFIED_EMAIL": True,  # Google emails are pre-verified
+        # Fields to extract from Google OAuth response
+        "FIELDS": [
+            "id",
+            "email",
+            "name",
+            "first_name",
+            "last_name",
+            "verified_email",
+            "picture",  # Profile picture URL
+            "locale",
+        ],
+        "EXCHANGE_TOKEN": True,
+        "LOCALE_FUNC": lambda request: "en_US",
     }
 }
+
+# ===== CUSTOM ADAPTER FOR GOOGLE OAUTH DATA =====
+# This will be used to populate AuthUser fields from Google metadata
+SOCIALACCOUNT_ADAPTER = "core.adapters.CustomSocialAccountAdapter"

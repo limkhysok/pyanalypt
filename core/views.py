@@ -1,19 +1,18 @@
+"""
+Core API Views
+
+Authentication is handled by dj-rest-auth.
+Add your custom views here as needed.
+"""
+
 from rest_framework import generics, permissions
-from .serializers import RegisterSerializer, UserSerializer
 
 
-class RegisterView(generics.CreateAPIView):
-    serializer_class = RegisterSerializer
-    permission_classes = [permissions.AllowAny]
-
-
-class UserDetailView(generics.RetrieveAPIView):
-    """
-    Returns the current logged-in user's details.
-    """
-
-    serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_object(self):
-        return self.request.user
+# Add your custom views here
+# Example:
+#
+# class UserListView(generics.ListAPIView):
+#     """List all users (admin only)"""
+#     queryset = AuthUser.objects.all()
+#     serializer_class = UserSerializer
+#     permission_classes = [permissions.IsAdminUser]
