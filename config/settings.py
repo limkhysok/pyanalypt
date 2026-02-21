@@ -290,8 +290,9 @@ SOCIALACCOUNT_STORE_TOKENS = True
 # JWT Configuration with dj-rest-auth
 REST_AUTH = {
     "USE_JWT": True,
-    "JWT_AUTH_COOKIE": "pyanalypt-auth",
-    "JWT_AUTH_REFRESH_COOKIE": "pyanalypt-refresh-token",
+    # JWT_AUTH_HTTPONLY defaults to True which forces refresh="" in the response body.
+    # Set to False so the refresh token is returned in the JSON body (SPA/mobile pattern).
+    "JWT_AUTH_HTTPONLY": False,
     "USER_DETAILS_SERIALIZER": "core.serializers.CustomUserDetailsSerializer",
 }
 
