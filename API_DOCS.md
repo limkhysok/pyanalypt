@@ -17,20 +17,28 @@ Authorization: Bearer <access_token>
 ## 🔐 Authentication Endpoints
 
 ### 1. Register New User
-Create a new user account with email-based authentication.
+Create a new user account using only email and password. Other profile fields are optional.
 
 - **Endpoint**: `POST /auth/registration/`
 - **Auth Required**: No
-- **Request Body**:
+- **Request Body (Minimum)**:
 ```json
 {
   "email": "user@example.com",
-  "username": "johndoe",
-  "first_name": "John",
-  "last_name": "Doe",
-  "full_name": "John Doe Example",
   "password1": "SecurePass123!",
   "password2": "SecurePass123!"
+}
+```
+
+- **Request Body (Full - Optional Fields)**:
+```json
+{
+  "email": "user@example.com",
+  "password1": "SecurePass123!",
+  "password2": "SecurePass123!",
+  "username": "johndoe",
+  "first_name": "John",
+  "last_name": "Doe"
 }
 ```
 
@@ -42,9 +50,9 @@ Create a new user account with email-based authentication.
   "user": {
     "pk": 2,
     "email": "user@example.com",
-    "username": "johndoe",
-    "first_name": "John",
-    "last_name": "Doe"
+    "username": "user",
+    "first_name": null,
+    "last_name": null
   }
 }
 ```
@@ -52,7 +60,7 @@ Create a new user account with email-based authentication.
 ---
 
 ### 2. Login (Email/Password)
-Obtain JWT tokens by logging in with email and password.
+Log in with your email and password to receive JWT tokens.
 
 - **Endpoint**: `POST /auth/login/`
 - **Auth Required**: No
@@ -70,9 +78,18 @@ Obtain JWT tokens by logging in with email and password.
   "access": "eyJ0eXAiOiJKV1QiLCJhbGc...",
   "refresh": "eyJ0eXAiOiJKV1QiLCJhbGc...",
   "user": {
-    "pk": 2,
+    "id": 14,
     "email": "user@example.com",
-    "username": "johndoe"
+    "username": "user",
+    "first_name": null,
+    "last_name": null,
+    "full_name": null,
+    "profile_picture": null,
+    "email_verified": false,
+    "is_staff": false,
+    "is_active": true,
+    "date_joined": "2026-02-21T06:07:28.102852Z",
+    "last_login": "2026-02-21T06:07:28.149655Z"
   }
 }
 ```

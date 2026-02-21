@@ -14,9 +14,11 @@ from django.contrib.auth.models import AbstractUser
 class AuthUser(AbstractUser):
     # Custom fields from mermaid_live.md (Differences from standard Django)
 
-    # first_name: Letters only (including accented characters), hyphens, apostrophes, min 2 chars
+    # first_name: Optional, letters only
     first_name = models.CharField(
         max_length=150,
+        null=True,
+        blank=True,
         validators=[
             RegexValidator(
                 regex=r"^[a-zA-ZÀ-ÿ'\- ]+$",
@@ -28,9 +30,11 @@ class AuthUser(AbstractUser):
         ],
     )
 
-    # last_name: Letters only (including accented characters), hyphens, apostrophes, min 2 chars
+    # last_name: Optional, letters only
     last_name = models.CharField(
         max_length=150,
+        null=True,
+        blank=True,
         validators=[
             RegexValidator(
                 regex=r"^[a-zA-ZÀ-ÿ'\- ]+$",
@@ -42,10 +46,12 @@ class AuthUser(AbstractUser):
         ],
     )
 
-    # username: Alphanumeric + underscores/hyphens/dots, min 3 chars, unique
+    # username: Alphanumeric + underscores/hyphens/dots, min 3 chars, unique (Optional in form)
     username = models.CharField(
         max_length=150,
         unique=True,
+        null=True,
+        blank=True,
         validators=[
             RegexValidator(
                 regex=r"^[a-zA-Z0-9._-]+$",
@@ -57,9 +63,11 @@ class AuthUser(AbstractUser):
         ],
     )
 
-    # full_name: Letters only, spaces allowed, min 10 chars, max 255 chars, no special characters, no numbers
+    # full_name: Letters only, spaces allowed, min 10 chars, max 255 chars (Optional in form)
     full_name = models.CharField(
         max_length=255,
+        null=True,
+        blank=True,
         validators=[
             RegexValidator(
                 regex=r"^[a-zA-ZÀ-ÿ ]+$",
@@ -149,7 +157,7 @@ class AuthUser(AbstractUser):
 
     # USERNAME_FIELD defines what field is used for login (we use email)
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["username", "first_name", "last_name", "full_name"]
+    REQUIRED_FIELDS = []
 
     class Meta:
         managed = True  # Enable Django migrations for this model
@@ -163,15 +171,27 @@ class AuthUser(AbstractUser):
 
     def save(self, *args, **kwargs):
         """
-        Override save to auto-generate full_name if not provided.
-        Also ensures email is lowercase for consistency.
+        Override save to auto-generate username and full_name if not provided.
+        Ensures email is lowercase for consistency.
         """
-        if not self.full_name and self.first_name and self.last_name:
-            self.full_name = f"{self.first_name} {self.last_name}"
-
         # Normalize email to lowercase
         if self.email:
             self.email = self.email.lower()
+
+        # Auto-generate username from email if not provided
+        if not self.username and self.email:
+            base_username = self.email.split("@")[0]
+            # Ensure it meets min length and regex
+            clean_username = "".join(
+                c for c in base_username if c.isalnum() or c in "._-"
+            )
+            if len(clean_username) < 3:
+                clean_username = clean_username + "user"
+            self.username = clean_username
+
+        # Auto-generate full_name if not provided
+        if not self.full_name and self.first_name and self.last_name:
+            self.full_name = f"{self.first_name} {self.last_name}"
 
         super().save(*args, **kwargs)
 

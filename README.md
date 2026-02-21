@@ -136,20 +136,20 @@ pyanalypt/
 **Model**: `core.models.AuthUser`
 
 **Fields**:
-- `email` - Primary authentication field (unique)
-- `username` - Display name (unique)
-- `first_name`, `last_name`, `full_name`
-- `profile_picture` - URL (from Google OAuth or CDN)
+- `email` - Primary authentication field (unique, **Required**)
+- `password` - Hashed (**Required**)
+- `username` - Display name (unique, **Optional** - auto-gen from email)
+- `first_name`, `last_name`, `full_name` (**Optional**)
+- `profile_picture` - URL (from Google OAuth or CDN, **Optional**)
 - `email_verified` - Boolean (auto-set for Google users)
-- `password` - Hashed
 - `is_staff`, `is_active`, `is_superuser`
 - `date_joined`, `last_login`
 
 **Validations**:
 - Email: Valid email format, unique
-- Username: Alphanumeric + `._-`, min 3 chars
-- Names: Letters, hyphens, apostrophes, min 2 chars
-- Full name: Letters + spaces, min 10 chars
+- Username: Alphanumeric + `._-`, min 3 chars (auto-generated if not provided)
+- Names: Letters, hyphens, apostrophes, min 2 chars (Optional)
+- Full name: Letters + spaces, min 10 chars (Optional)
 - Password: Min 8 chars, validated by Django settings
 - Profile picture: HTTPS only
 
@@ -193,7 +193,7 @@ Automatically extracts and populates:
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/auth/registration/ \
   -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","username":"test","password1":"Pass123!","password2":"Pass123!"}'
+  -d '{"email":"test@example.com","password1":"Pass123!","password2":"Pass123!"}'
 ```
 
 **Login**:

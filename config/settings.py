@@ -256,17 +256,11 @@ SITE_ID = 1
 
 # ===== ALLAUTH ACCOUNT SETTINGS =====
 # Signup/Login Configuration
-ACCOUNT_SIGNUP_FIELDS = [
-    "email*",  # Required
-    "username*",  # Required
-    "password1*",  # Required
-    "password2*",  # Required
-]
-
-# Authentication Method
+ACCOUNT_LOGIN_METHODS = {"email"}
 ACCOUNT_EMAIL_REQUIRED = True
-ACCOUNT_USERNAME_REQUIRED = True
+ACCOUNT_USERNAME_REQUIRED = False
 ACCOUNT_UNIQUE_EMAIL = True
+ACCOUNT_EMAIL_VERIFICATION = "optional"
 ACCOUNT_USER_MODEL_USERNAME_FIELD = "username"
 
 # Email Verification
@@ -298,6 +292,7 @@ REST_AUTH = {
     "USE_JWT": True,
     "JWT_AUTH_COOKIE": "pyanalypt-auth",
     "JWT_AUTH_REFRESH_COOKIE": "pyanalypt-refresh-token",
+    "USER_DETAILS_SERIALIZER": "core.serializers.CustomUserDetailsSerializer",
 }
 
 # ===== SOCIAL ACCOUNT PROVIDERS =====

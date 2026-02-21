@@ -1,18 +1,14 @@
-"""
-Custom Serializers
-
-Note: Authentication serializers are handled by dj-rest-auth.
-These are kept for reference or future custom endpoints.
-"""
-
-from rest_framework import serializers
+from dj_rest_auth.serializers import UserDetailsSerializer
 from .models import AuthUser
 
 
-class UserSerializer(serializers.ModelSerializer):
-    """Serializer for AuthUser model"""
+class CustomUserDetailsSerializer(UserDetailsSerializer):
+    """
+    Extends dj-rest-auth's UserDetailsSerializer to return all
+    AuthUser fields on login, registration, and GET /auth/user/.
+    """
 
-    class Meta:
+    class Meta(UserDetailsSerializer.Meta):
         model = AuthUser
         fields = (
             "id",
@@ -28,4 +24,10 @@ class UserSerializer(serializers.ModelSerializer):
             "date_joined",
             "last_login",
         )
-        read_only_fields = ("id", "email_verified", "date_joined", "last_login")
+        read_only_fields = (
+            "id",
+            "email",
+            "email_verified",
+            "date_joined",
+            "last_login",
+        )
