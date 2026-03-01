@@ -6,8 +6,14 @@ from django.db import models
 
 class AuthGroupPermissions(models.Model):
     id = models.AutoField(primary_key=True)
-    group = models.ForeignKey("AuthGroup", on_delete=models.DO_NOTHING)
-    permission = models.ForeignKey("AuthPermission", on_delete=models.DO_NOTHING)
+    # The column name in the database is 'group_id'
+    group = models.ForeignKey(
+        "AuthGroup", on_delete=models.CASCADE, db_column="group_id"
+    )
+    # The column name in the database is 'permission_id'
+    permission = models.ForeignKey(
+        "AuthPermission", on_delete=models.CASCADE, db_column="permission_id"
+    )
 
     class Meta:
         managed = False

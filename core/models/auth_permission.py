@@ -1,14 +1,12 @@
-from django.db import models
 from django.contrib.auth.models import Permission
 
+
 # THIS IS A REFERENCE FILE BASED ON mermaid_live.md
-# DO NOT MIGRATE.
-
-
 class AuthPermission(Permission):
     class Meta:
-        managed = False
-        db_table = "auth_permission"
+        proxy = True
+        # db_table is not needed for proxy models as they use the base model's table
 
     def __str__(self):
+        # Accessing content_type_id from base model
         return f"{self.content_type_id} | {self.codename}"

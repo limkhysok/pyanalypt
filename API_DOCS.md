@@ -443,6 +443,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/logout/ \
 ## 🔗 Resources
 
 - **Admin Panel**: http://127.0.0.1:8000/admin/
+    - email : dev_admin@pyanalypt.com
+    - password : devadminpass123
 
 ---
 

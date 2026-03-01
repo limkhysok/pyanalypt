@@ -6,8 +6,14 @@ from django.db import models
 
 class AuthUserGroups(models.Model):
     id = models.AutoField(primary_key=True)
-    user = models.ForeignKey("AuthUser", on_delete=models.DO_NOTHING)
-    group = models.ForeignKey("AuthGroup", on_delete=models.DO_NOTHING)
+    # The column name in the database is 'authuser_id'
+    user = models.ForeignKey(
+        "AuthUser", on_delete=models.CASCADE, db_column="authuser_id"
+    )
+    # The column name in the database is 'group_id'
+    group = models.ForeignKey(
+        "AuthGroup", on_delete=models.CASCADE, db_column="group_id"
+    )
 
     class Meta:
         managed = False
