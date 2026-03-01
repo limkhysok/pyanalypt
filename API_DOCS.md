@@ -335,7 +335,110 @@ Check if a JWT token is still valid.
 
 ---
 
-##  Error Responses
+## 📂 Project Management
+
+All project endpoints require authentication. Users can only see, modify, or delete their own projects.
+
+### 12. List Projects
+Get a list of all projects owned by the currently authenticated user.
+
+- **Endpoint**: `GET /projects/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+[
+  {
+    "id": "d3f4b5c6-a1b2-c3d4-e5f6-g7h8i9j0k1l2",
+    "name": "Q1 Revenue Analysis",
+    "slug": "q1-revenue-analysis",
+    "description": "Analysis of sales performance in first quarter",
+    "category": "Sales",
+    "status": "active",
+    "color_code": "#4F46E5",
+    "thumbnail": null,
+    "is_favorite": true,
+    "created_at": "2026-03-01T07:45:00Z",
+    "updated_at": "2026-03-01T08:00:00Z",
+    "last_accessed_at": "2026-03-01T08:00:00Z",
+    "settings": {}
+  }
+]
+```
+
+---
+
+### 13. Create Project
+Create a new project. The `user` field is automatically set to the current user.
+
+- **Endpoint**: `POST /projects/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "name": "Market Research 2026",
+  "description": "Exploring new market opportunities",
+  "category": "Marketing",
+  "color_code": "#EF4444"
+}
+```
+- **Response (201 Created)**: Full project object.
+
+---
+
+### 14. Get Project Details
+Retrieve details of a specific project by UUID.
+
+- **Endpoint**: `GET /projects/<uuid>/`
+- **Auth Required**: Yes
+- **Response (200 OK)**: Full project object.
+
+---
+
+### 15. Update Project (Full)
+Replace all fields of a project.
+
+- **Endpoint**: `PUT /projects/<uuid>/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "name": "Updated Analysis Name",
+  "description": "New description text",
+  "category": "Finance",
+  "status": "active",
+  "is_favorite": false,
+  "color_code": "#10B981"
+}
+```
+- **Response (200 OK)**: Updated project object.
+
+---
+
+### 16. Update Project (Partial)
+Update specific fields of a project (e.g., mark as favorite).
+
+- **Endpoint**: `PATCH /projects/<uuid>/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "is_favorite": true
+}
+```
+- **Response (200 OK)**: Updated project object.
+
+---
+
+### 17. Delete Project
+Permanently delete a project and all associated data.
+
+- **Endpoint**: `DELETE /projects/<uuid>/`
+- **Auth Required**: Yes
+- **Response (204 No Content)**: (Empty response)
+
+---
+
+## 📊 Error Responses
 
 ### Standard Error Format
 ```json
@@ -428,6 +531,20 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/logout/ \
   -d '{"refresh":"<refresh_token>"}'
 ```
 
+**List Projects:**
+```bash
+curl -X GET http://127.0.0.1:8000/api/v1/projects/ \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Create Project:**
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/projects/ \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"New Project","category":"Data"}'
+```
+
 ---
 
 ## 📝 Custom User Model
@@ -448,6 +565,6 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/logout/ \
 
 ---
 
-**Last Updated**: 2026-02-21
+**Last Updated**: 2026-03-01
 **API Version**: v1
 **Status**: ✅ Active

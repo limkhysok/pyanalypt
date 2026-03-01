@@ -39,7 +39,6 @@ urlpatterns = [
     path("auth/token/", TokenObtainPairView.as_view(), name="token-obtain"),
     path("auth/token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token-verify"),
-    # Add your app resources here:
-    # path("projects/", include("projects.urls")),
-    # path("analytics/", include("analytics.urls")),
+    # Project Management
+    path("projects/", include("projects.urls")),
 ]
