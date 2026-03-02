@@ -230,6 +230,59 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
                                 status=status.HTTP_400_BAD_REQUEST,
                             )
 
+                elif op == "drop_columns":
+                    cols = params.get("columns", [])
+                    # Safety: don't drop everything
+                    if len(cols) < len(df.columns):
+                        df = df.drop(columns=[c for c in cols if c in df.columns])
+
+                elif op == "rename_columns":
+                    mapping = params.get("mapping", {})
+                    df = df.rename(columns=mapping)
+
+                elif op == "trim_strings":
+                    cols = params.get("columns", "all")
+                    target_cols = df.columns if cols == "all" else cols
+                    for c in target_cols:
+                        if pd.api.types.is_object_dtype(df[c]):
+                            df[c] = df[c].astype(str).str.strip()
+
+                elif op == "case_convert":
+                    cols = params.get("columns", [])
+                    case_type = params.get("case", "lower")
+                    for c in cols:
+                        if c in df.columns and pd.api.types.is_object_dtype(df[c]):
+                            if case_type == "lower":
+                                df[c] = df[c].astype(str).str.lower()
+                            elif case_type == "upper":
+                                df[c] = df[c].astype(str).str.upper()
+                            elif case_type == "title":
+                                df[c] = df[c].astype(str).str.title()
+
+                elif op == "replace_value":
+                    col = params.get("column")
+                    old_v = params.get("old_value")
+                    new_v = params.get("new_value")
+                    if col in df.columns:
+                        df[col] = df[col].replace(old_v, new_v)
+
+                elif op == "outlier_clip":
+                    cols = params.get("columns", [])
+                    low = params.get("lower_quantile", 0.05)
+                    high = params.get("upper_quantile", 0.95)
+                    for c in cols:
+                        if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+                            q_low = df[c].quantile(low)
+                            q_high = df[c].quantile(high)
+                            df[c] = df[c].clip(lower=q_low, upper=q_high)
+
+                elif op == "round_numeric":
+                    cols = params.get("columns", [])
+                    decimals = params.get("decimals", 2)
+                    for c in cols:
+                        if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+                            df[c] = df[c].round(decimals)
+
             # Save cleaned version as a new dataset
             new_name = f"cleaned_{dataset.name}"
             # Ensure it doesn't get recursive 'cleaned_cleaned_'

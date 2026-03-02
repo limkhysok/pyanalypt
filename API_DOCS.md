@@ -559,29 +559,26 @@ Apply a pipeline of cleaning operations (filling NAs, dropping duplicates, chang
 ```json
 {
   "pipeline": [
-    {
-      "operation": "handle_na",
-      "params": {
-        "columns": ["price", "age"],
-        "strategy": "fill_mean"
-      }
-    },
-    {
-      "operation": "drop_duplicates",
-      "params": {
-        "columns": "all" 
-      }
-    },
-    {
-      "operation": "astype",
-      "params": {
-        "column": "created_at",
-        "target_type": "datetime"
-      }
-    }
+    { "operation": "handle_na", "params": { "columns": ["age"], "strategy": "fill_mean" } },
+    { "operation": "drop_columns", "params": { "columns": ["temp_id"] } }
   ]
 }
 ```
+
+#### 🛠️ Supported Operations (Top 10):
+
+| Operation | Description | Parameters |
+| :--- | :--- | :--- |
+| **`handle_na`** | Handle missing values | `columns` (array/all), `strategy` (drop, fill_zero, fill_mean, fill_median) |
+| **`drop_duplicates`** | Remove duplicate rows | `columns` (array/all) |
+| **`astype`** | Change column data type | `column` (string), `target_type` (int, float, string, datetime) |
+| **`drop_columns`** | Remove columns | `columns` (array) |
+| **`rename_columns`** | Rename headers | `mapping` (object: `{"old": "new"}`) |
+| **`trim_strings`** | Remove whitespace | `columns` (array/all) |
+| **`case_convert`** | Change text case | `columns` (array), `case` (lower, upper, title) |
+| **`replace_value`** | Replace specific value | `column` (string), `old_value`, `new_value` |
+| **`outlier_clip`** | Cap extreme values | `columns` (array), `lower_quantile` (0.05), `upper_quantile` (0.95) |
+| **`round_numeric`** | Round decimal points | `columns` (array), `decimals` (int) |
 - **Response (200 OK)**: Returns the preview of the **newly created** cleaned dataset.
 ```json
 {
