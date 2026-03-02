@@ -3,8 +3,6 @@ from django.db import models
 from django.conf import settings
 from django.utils.text import slugify
 from django.utils import timezone
-from django.core.exceptions import ValidationError
-import os
 
 
 class Project(models.Model):
@@ -70,44 +68,3 @@ class Project(models.Model):
         """Update last accessed time without triggering full updated_at change."""
         self.last_accessed_at = timezone.now()
         self.save(update_fields=["last_accessed_at"])
-
-
-def validate_file_size_and_type(value):
-    # 25MB Limit
-    filesize = value.size
-    if filesize > 25 * 1024 * 1024:
-        raise ValidationError("The maximum file size that can be uploaded is 25MB")
-
-    # Extension Check
-    ext = os.path.splitext(value.name)[1]
-    valid_extensions = [".csv", ".xlsx", ".xls", ".json"]
-    if ext.lower() not in valid_extensions:
-        raise ValidationError("Unsupported file extension. Use CSV, Excel, or JSON.")
-
-
-class ProjectDataset(models.Model):
-    project = models.ForeignKey(
-        Project, on_delete=models.CASCADE, related_name="datasets"
-    )
-    file = models.FileField(
-        upload_to="datasets/%Y/%m/%d/", validators=[validate_file_size_and_type]
-    )
-    name = models.CharField(max_length=255)
-    file_format = models.CharField(max_length=10, blank=True)
-    row_count = models.IntegerField(null=True, blank=True)
-    column_count = models.IntegerField(null=True, blank=True)
-
-    uploaded_at = models.DateTimeField(auto_now_add=True)
-
-    def save(self, *args, **kwargs):
-        if not self.name:
-            self.name = self.file.name
-        if not self.file_format:
-            self.file_format = os.path.splitext(self.file.name)[1][1:].lower()
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.name} ({self.project.name})"
-
-    class Meta:
-        ordering = ["-uploaded_at"]

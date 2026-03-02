@@ -1,8 +1,11 @@
 from rest_framework import serializers
 from .models import Project
+from datasets.serializers import ProjectDatasetSerializer
 
 
 class ProjectSerializer(serializers.ModelSerializer):
+    datasets = ProjectDatasetSerializer(many=True, read_only=True)
+
     class Meta:
         model = Project
         fields = (
@@ -19,6 +22,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "updated_at",
             "last_accessed_at",
             "settings",
+            "datasets",
         )
         read_only_fields = (
             "id",
@@ -30,5 +34,6 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         # Automatically set the user to the currently logged in user
-        validated_data["user"] = self.context["request"].user
+        if "request" in self.context:
+            validated_data["user"] = self.context["request"].user
         return super().create(validated_data)

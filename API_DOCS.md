@@ -342,7 +342,7 @@ All project endpoints require authentication. Users can only see, modify, or del
 ### 12. List Projects
 Get a list of all projects owned by the currently authenticated user.
 
-- **Endpoint**: `GET /projects/`
+- **Endpoint**: `GET /api/v1/projects/`
 - **Auth Required**: Yes
 - **Response (200 OK)**:
 ```json
@@ -360,7 +360,18 @@ Get a list of all projects owned by the currently authenticated user.
     "created_at": "2026-03-01T07:45:00Z",
     "updated_at": "2026-03-01T08:00:00Z",
     "last_accessed_at": "2026-03-01T08:00:00Z",
-    "settings": {}
+    "settings": {},
+    "datasets": [
+      {
+        "id": 4,
+        "file": "http://127.0.0.1:8000/media/datasets/2026/03/02/data.csv",
+        "name": "sales_q1.csv",
+        "file_format": "csv",
+        "row_count": 1500,
+        "column_count": 12,
+        "uploaded_at": "2026-03-02T09:00:00Z"
+      }
+    ]
   }
 ]
 ```
@@ -370,7 +381,7 @@ Get a list of all projects owned by the currently authenticated user.
 ### 13. Create Project
 Create a new project. The `user` field is automatically set to the current user.
 
-- **Endpoint**: `POST /projects/`
+- **Endpoint**: `POST /api/v1/projects/`
 - **Auth Required**: Yes
 - **Request Body**:
 ```json
@@ -388,7 +399,7 @@ Create a new project. The `user` field is automatically set to the current user.
 ### 14. Get Project Details
 Retrieve details of a specific project by UUID.
 
-- **Endpoint**: `GET /projects/<uuid>/`
+- **Endpoint**: `GET /api/v1/projects/<uuid>/`
 - **Auth Required**: Yes
 - **Response (200 OK)**: Full project object.
 
@@ -397,7 +408,7 @@ Retrieve details of a specific project by UUID.
 ### 15. Update Project (Full)
 Replace all fields of a project.
 
-- **Endpoint**: `PUT /projects/<uuid>/`
+- **Endpoint**: `PUT /api/v1/projects/<uuid>/`
 - **Auth Required**: Yes
 - **Request Body**:
 ```json
@@ -417,7 +428,7 @@ Replace all fields of a project.
 ### 16. Update Project (Partial)
 Update specific fields of a project (e.g., mark as favorite).
 
-- **Endpoint**: `PATCH /projects/<uuid>/`
+- **Endpoint**: `PATCH /api/v1/projects/<uuid>/`
 - **Auth Required**: Yes
 - **Request Body**:
 ```json
@@ -432,7 +443,108 @@ Update specific fields of a project (e.g., mark as favorite).
 ### 17. Delete Project
 Permanently delete a project and all associated data.
 
-- **Endpoint**: `DELETE /projects/<uuid>/`
+- **Endpoint**: `DELETE /api/v1/projects/<uuid>/`
+- **Auth Required**: Yes
+- **Response (204 No Content)**: (Empty response)
+
+---
+
+## 📊 Dataset Management
+
+Endpoints for adding data to a project via file upload or raw text paste.
+
+### 18. Upload Dataset (File / Drag & Drop)
+Use this for physical files selected via a file input or dragged into the UI.
+
+- **Endpoint**: `POST /api/v1/datasets/upload/`
+- **Auth Required**: Yes
+- **Content-Type**: `multipart/form-data`
+- **Request Body**:
+    - `project`: (UUID) The ID of the project to attach this file to.
+    - `file`: (Binary) The actual CSV, Excel, or JSON file.
+    - `name`: (String, optional) custom name for the dataset.
+
+- **Response (201 Created)**:
+```json
+{
+  "id": 4,
+  "project": "d3f4b5c6...",
+  "file": "http://127.0.0.1:8000/media/datasets/2026/03/02/data.csv",
+  "name": "sales_q1.csv",
+  "file_format": "csv",
+  "uploaded_at": "2026-03-02T09:00:00Z"
+}
+```
+
+---
+
+### 19. Paste Dataset (Raw Text)
+Use this for users who want to copy-paste data directly into a text area.
+
+- **Endpoint**: `POST /api/v1/datasets/paste/`
+- **Auth Required**: Yes
+- **Content-Type**: `application/json`
+- **Request Body**:
+```json
+{
+  "project": "d3f4b5c6...",
+  "raw_data": "id,name,price\n1,Apples,1.50\n2,Oranges,2.00",
+  "name": "Manual Entry",
+  "format": "csv" 
+}
+```
+
+- **Response (201 Created)**: Same as Upload Dataset.
+
+---
+
+### 20. Get Dataset Preview (Columns & Rows)
+Returns the list of column names and a subset of rows. Supports CSV, Excel, and JSON.
+
+- **Endpoint**: `GET /api/v1/datasets/items/<id>/preview/?rows=50`
+- **Auth Required**: Yes
+- **Query Parameters**:
+    - `rows`: (Integer, optional) Number of rows to return. Default is `10`, max is `1000`.
+- **Response (200 OK)**:
+```json
+{
+  "columns": ["id", "name", "price"],
+  "rows": [
+    {"id": 1, "name": "Apples", "price": 1.50},
+    {"id": 2, "name": "Oranges", "price": 2.00}
+  ],
+  "metadata": {
+    "dtypes": {"id": "int64", "name": "object", "price": "float64"},
+    "shape": [450, 3]
+  },
+  "summary": {
+    "price": {"count": 450, "mean": 15.2, "std": 5.1, "min": 0.5, "max": 99.0}
+  },
+  "total_rows_hint": 450
+}
+```
+
+---
+
+### 21. Update Dataset (Rename)
+Update metadata like the display name of a dataset.
+
+- **Endpoint**: `PATCH /api/v1/datasets/items/<id>/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "name": "Updated Dataset Name"
+}
+```
+- **Response (200 OK)**: Updated dataset object.
+
+---
+
+### 22. Delete Dataset
+Permanently remove a dataset from the project and delete the file from storage.
+
+- **Endpoint**: `DELETE /api/v1/datasets/items/<id>/`
 - **Auth Required**: Yes
 - **Response (204 No Content)**: (Empty response)
 
@@ -465,17 +577,19 @@ Permanently delete a project and all associated data.
 
 ### Email/Password
 ```
-1. POST /auth/registration/  →  {access, refresh, user}
+1. POST /api/v1/auth/registration/  →  {access, refresh, user}
 2. Store access + refresh tokens on client
 3. Every request: Authorization: Bearer <access>
-4. When access expires (60 min): POST /auth/token/refresh/
-5. On logout: POST /auth/logout/ with refresh token
+4. When access expires (60 min): POST /api/v1/auth/token/refresh/
+5. On logout: POST /api/v1/auth/token/logout/
 ```
 
 ### Google OAuth (SPA/Mobile)
 ```
 1. Frontend: Google Sign-In  →  access_token from Google
-2. POST /auth/google/  with { access_token }
+2. POST /api/v1/auth/google/  with { access_token }
+3. Receive JWT tokens  →  {access, refresh, user}
+```
 3. Backend validates with Google, creates/updates user
 4. Returns {access, refresh, user}  — same as email login
 5. Store tokens on client, use identically from here

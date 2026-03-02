@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Project, ProjectDataset
+from .models import Project
 
 
 @admin.register(Project)
@@ -19,11 +19,3 @@ class ProjectAdmin(admin.ModelAdmin):
         ("UI & UX", {"fields": ("color_code", "thumbnail", "settings")}),
         ("Audit", {"fields": ("created_at", "updated_at", "last_accessed_at")}),
     )
-
-
-@admin.register(ProjectDataset)
-class ProjectDatasetAdmin(admin.ModelAdmin):
-    list_display = ("name", "project", "file_format", "row_count", "uploaded_at")
-    list_filter = ("file_format", "uploaded_at")
-    search_fields = ("name", "project__name")
-    readonly_fields = ("uploaded_at",)
