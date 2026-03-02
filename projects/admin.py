@@ -1,20 +1,14 @@
 from django.contrib import admin
-from .models import Project
+from .models import Project, ProjectDataset
 
 
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
-    list_display = (
-        "name",
-        "user",
-        "status",
-        "is_favorite",
-        "created_at",
-        "last_accessed_at",
-    )
-    list_filter = ("status", "is_favorite", "created_at", "category")
+    list_display = ("name", "user", "status", "is_favorite", "created_at")
+    list_filter = ("status", "is_favorite", "category")
     search_fields = ("name", "description", "user__email")
-    readonly_fields = ("id", "slug", "created_at", "updated_at", "last_accessed_at")
+    prepopulated_fields = {"slug": ("name",)}
+    readonly_fields = ("id", "created_at", "updated_at", "last_accessed_at")
 
     fieldsets = (
         ("Identity", {"fields": ("id", "user", "name", "slug")}),
@@ -25,3 +19,11 @@ class ProjectAdmin(admin.ModelAdmin):
         ("UI & UX", {"fields": ("color_code", "thumbnail", "settings")}),
         ("Audit", {"fields": ("created_at", "updated_at", "last_accessed_at")}),
     )
+
+
+@admin.register(ProjectDataset)
+class ProjectDatasetAdmin(admin.ModelAdmin):
+    list_display = ("name", "project", "file_format", "row_count", "uploaded_at")
+    list_filter = ("file_format", "uploaded_at")
+    search_fields = ("name", "project__name")
+    readonly_fields = ("uploaded_at",)
