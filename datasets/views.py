@@ -1,4 +1,5 @@
 import uuid
+import io
 import pandas as pd
 from rest_framework import viewsets, permissions, generics, status
 from rest_framework.response import Response
@@ -81,7 +82,7 @@ class PasteDatasetView(generics.GenericAPIView):
 class ProjectDatasetViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing individual datasets (Read, Update, Delete).
-    Includes a 'preview' action to see columns and first 10 rows.
+    Includes a 'preview' action and 'clean' action for transformations.
     """
 
     serializer_class = ProjectDatasetSerializer
@@ -90,56 +91,178 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return ProjectDataset.objects.filter(project__user=self.request.user)
 
+    def _get_preview_response(self, dataset, df, row_limit=10):
+        """Helper to generate preview structure from a dataframe."""
+        preview_df = df.head(row_limit)
+        dtypes = df.dtypes.apply(lambda x: str(x)).to_dict()
+        summary = {}
+
+        # Numeric summary
+        numeric_cols = df.select_dtypes(include=["number"]).columns
+        if not numeric_cols.empty:
+            summary = df[numeric_cols].describe().to_dict()
+
+        return {
+            "columns": list(df.columns),
+            "rows": preview_df.where(pd.notnull(preview_df), None).to_dict(
+                orient="records"
+            ),
+            "metadata": {
+                "dtypes": dtypes,
+                "shape": [len(df), len(df.columns)],
+            },
+            "summary": summary,
+            "total_rows_hint": len(df),
+            "dataset_id": dataset.id,
+            "name": dataset.name,
+        }
+
     @action(detail=True, methods=["get"])
     def preview(self, request, pk=None):
         dataset = self.get_object()
         file_path = dataset.file.path
 
-        # Get dynamic row limit from query params (default 10, max 1000)
         try:
             row_limit = int(request.query_params.get("rows", 10))
-            if row_limit <= 0:
-                row_limit = 10
-            row_limit = min(row_limit, 1000)  # Safety cap
+            row_limit = min(max(row_limit, 1), 1000)
         except (ValueError, TypeError):
             row_limit = 10
 
         try:
             if dataset.file_format == "csv":
-                df = pd.read_csv(file_path, nrows=row_limit)
+                df = pd.read_csv(
+                    file_path, nrows=row_limit + 100
+                )  # Read slightly more for context
             elif dataset.file_format in ["xlsx", "xls"]:
-                df = pd.read_excel(file_path, nrows=row_limit)
+                df = pd.read_excel(file_path, nrows=row_limit + 100)
             elif dataset.file_format == "json":
-                df = pd.read_json(file_path).head(row_limit)
+                df = pd.read_json(file_path).head(row_limit + 100)
             else:
                 return Response(
-                    {"detail": "Unsupported preview for this format."},
+                    {"detail": "Unsupported format."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Extract dtypes and summary
-            dtypes = df.dtypes.apply(lambda x: str(x)).to_dict()
-            summary = {}
-            # Numeric summary
-            numeric_cols = df.select_dtypes(include=["number"]).columns
-            if not numeric_cols.empty:
-                full_stats = df[numeric_cols].describe().to_dict()
-                summary = full_stats
-
-            preview_data = {
-                "columns": list(df.columns),
-                "rows": df.where(pd.notnull(df), None).to_dict(orient="records"),
-                "metadata": {
-                    "dtypes": dtypes,
-                    "shape": [dataset.row_count, dataset.column_count],
-                },
-                "summary": summary,
-                "total_rows_hint": dataset.row_count,  # Backwards compatibility
-            }
-            return Response(preview_data)
+            return Response(self._get_preview_response(dataset, df, row_limit))
 
         except Exception as e:
             return Response(
                 {"detail": f"Error reading file: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(detail=True, methods=["post"])
+    def clean(self, request, pk=None):
+        """
+        Apply data cleaning transformations.
+        Expects a pipeline of operations.
+        """
+        dataset = self.get_object()
+        pipeline = request.data.get("pipeline", [])
+        file_path = dataset.file.path
+
+        try:
+            # Load full dataframe for pipeline processing
+            if dataset.file_format == "csv":
+                df = pd.read_csv(file_path)
+            elif dataset.file_format in ["xlsx", "xls"]:
+                df = pd.read_excel(file_path)
+            elif dataset.file_format == "json":
+                df = pd.read_json(file_path)
+            else:
+                return Response(
+                    {"detail": "Unsupported format for cleaning."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Apply transformations
+            for step in pipeline:
+                op = step.get("operation")
+                params = step.get("params", {})
+
+                if op == "handle_na":
+                    cols = params.get("columns", "all")
+                    strategy = params.get("strategy", "drop")
+                    target_cols = df.columns if cols == "all" else cols
+
+                    if strategy == "drop":
+                        df = df.dropna(subset=target_cols)
+                    elif strategy == "fill_zero":
+                        df[target_cols] = df[target_cols].fillna(0)
+                    elif strategy == "fill_mean":
+                        for c in target_cols:
+                            if pd.api.types.is_numeric_dtype(df[c]):
+                                df[c] = df[c].fillna(df[c].mean())
+                    elif strategy == "fill_median":
+                        for c in target_cols:
+                            if pd.api.types.is_numeric_dtype(df[c]):
+                                df[c] = df[c].fillna(df[c].median())
+
+                elif op == "drop_duplicates":
+                    cols = params.get("columns", "all")
+                    subset = None if cols == "all" else cols
+                    df = df.drop_duplicates(subset=subset)
+
+                elif op == "astype":
+                    col = params.get("column")
+                    target_type = params.get("target_type")
+                    if col in df.columns:
+                        try:
+                            if target_type == "int":
+                                df[col] = (
+                                    pd.to_numeric(df[col], errors="coerce")
+                                    .fillna(0)
+                                    .astype(int)
+                                )
+                            elif target_type == "float":
+                                df[col] = pd.to_numeric(
+                                    df[col], errors="coerce"
+                                ).astype(float)
+                            elif target_type == "string":
+                                df[col] = df[col].astype(str)
+                            elif target_type == "datetime":
+                                df[col] = pd.to_datetime(df[col], errors="coerce")
+                        except Exception as e:
+                            return Response(
+                                {
+                                    "detail": f"Type conversion failed for column '{col}': {str(e)}"
+                                },
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+
+            # Save cleaned version as a new dataset
+            new_name = f"cleaned_{dataset.name}"
+            # Ensure it doesn't get recursive 'cleaned_cleaned_'
+            if dataset.name.startswith("cleaned_"):
+                new_name = dataset.name
+
+            buf = io.BytesIO()
+            if dataset.file_format == "csv":
+                df.to_csv(buf, index=False)
+            elif dataset.file_format in ["xlsx", "xls"]:
+                df.to_excel(buf, index=False)
+            elif dataset.file_format == "json":
+                df.to_json(buf)
+            buf.seek(0)
+
+            content_file = ContentFile(buf.read(), name=new_name)
+
+            new_dataset = ProjectDataset.objects.create(
+                project=dataset.project,
+                file=content_file,
+                name=new_name,
+                parent=dataset,
+                is_cleaned=True,
+                row_count=len(df),
+                column_count=len(df.columns),
+                file_format=dataset.file_format,
+            )
+
+            # Return the preview of the NEW dataset
+            return Response(self._get_preview_response(new_dataset, df))
+
+        except Exception as e:
+            return Response(
+                {"detail": f"Cleaning failed: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )

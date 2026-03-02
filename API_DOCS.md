@@ -550,6 +550,56 @@ Permanently remove a dataset from the project and delete the file from storage.
 
 ---
 
+### 23. Clean Dataset (Transformations)
+Apply a pipeline of cleaning operations (filling NAs, dropping duplicates, changing types). This creates a **new** cleaned version of the dataset.
+
+- **Endpoint**: `POST /api/v1/datasets/items/<id>/clean/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "pipeline": [
+    {
+      "operation": "handle_na",
+      "params": {
+        "columns": ["price", "age"],
+        "strategy": "fill_mean"
+      }
+    },
+    {
+      "operation": "drop_duplicates",
+      "params": {
+        "columns": "all" 
+      }
+    },
+    {
+      "operation": "astype",
+      "params": {
+        "column": "created_at",
+        "target_type": "datetime"
+      }
+    }
+  ]
+}
+```
+- **Response (200 OK)**: Returns the preview of the **newly created** cleaned dataset.
+```json
+{
+  "columns": ["id", "name", "price", "age", "created_at"],
+  "rows": [],
+  "metadata": {
+    "dtypes": {},
+    "shape": [448, 5]
+  },
+  "summary": {},
+  "total_rows_hint": 448,
+  "dataset_id": 12,
+  "name": "cleaned_sales_data.csv"
+}
+```
+
+---
+
 ## 📊 Error Responses
 
 ### Standard Error Format

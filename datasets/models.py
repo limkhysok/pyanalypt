@@ -20,6 +20,14 @@ class ProjectDataset(models.Model):
     file_format = models.CharField(max_length=10, blank=True)
     row_count = models.IntegerField(null=True, blank=True)
     column_count = models.IntegerField(null=True, blank=True)
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cleaned_versions",
+    )
+    is_cleaned = models.BooleanField(default=False)
 
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
