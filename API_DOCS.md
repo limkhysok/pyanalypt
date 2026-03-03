@@ -597,6 +597,34 @@ Apply a pipeline of cleaning operations (filling NAs, dropping duplicates, chang
 
 ---
 
+### 24. Analyze Dataset (Smart Insights)
+Get advanced statistical insights about the dataset, including correlations, missing value distribution, and outlier counts.
+
+- **Endpoint**: `GET /api/v1/datasets/items/<id>/analyze/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+{
+  "correlations": {
+    "price": { "price": 1.0, "quantity": -0.12, "age": 0.05 },
+    "quantity": { "price": -0.12, "quantity": 1.0, "age": 0.01 }
+  },
+  "missing_values": {
+    "customer_name": { "count": 12, "percentage": 2.5 },
+    "age": { "count": 0, "percentage": 0.0 }
+  },
+  "outlier_summary": {
+    "unit_price": 5,
+    "quantity": 2
+  },
+  "metadata": {
+    "numeric_cols_count": 5
+  }
+}
+```
+
+---
+
 ## 📊 Error Responses
 
 ### Standard Error Format

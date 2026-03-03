@@ -1,6 +1,7 @@
 import uuid
 import io
 import pandas as pd
+import numpy as np
 from rest_framework import viewsets, permissions, generics, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -317,5 +318,72 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response(
                 {"detail": f"Cleaning failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(detail=True, methods=["get"])
+    def analyze(self, request, pk=None):
+        """
+        Perform smart analysis: Correlation Matrix and Missing Value Analysis.
+        """
+        dataset = self.get_object()
+        file_path = dataset.file.path
+
+        try:
+            # Load full dataframe
+            if dataset.file_format == "csv":
+                df = pd.read_csv(file_path)
+            elif dataset.file_format in ["xlsx", "xls"]:
+                df = pd.read_excel(file_path)
+            elif dataset.file_format == "json":
+                df = pd.read_json(file_path)
+            else:
+                return Response(
+                    {"detail": "Unsupported format for analysis."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # 1. Correlation Matrix (Numeric only)
+            numeric_df = df.select_dtypes(include=[np.number])
+            # Drop columns with zero variance (all same values)
+            numeric_df = numeric_df.loc[:, (numeric_df.nunique() > 1)]
+
+            corr_matrix = {}
+            if not numeric_df.empty:
+                # Use spearman to capture non-linear but monotonic relationships
+                corr_data = numeric_df.corr(method="spearman").round(3)
+                corr_matrix = corr_data.to_dict()
+
+            # 2. Missing Value Distribution
+            null_counts = df.isnull().sum()
+            null_pct = (null_counts / len(df) * 100).round(2)
+            missing_analysis = {
+                col: {"count": int(count), "percentage": float(null_pct[col])}
+                for col, count in null_counts.to_dict().items()
+            }
+
+            # 3. Quick Outlier Detection (Z-Score method for numeric)
+            outliers = {}
+            for col in numeric_df.columns:
+                z_scores = np.abs((df[col] - df[col].mean()) / df[col].std())
+                outlier_count = int((z_scores > 3).sum())
+                if outlier_count > 0:
+                    outliers[col] = outlier_count
+
+            analysis_result = {
+                "correlations": corr_matrix,
+                "missing_values": missing_analysis,
+                "outlier_summary": outliers,
+                "metadata": {
+                    "analyzed_at": uuid.uuid4().hex[:8],
+                    "numeric_cols_count": len(numeric_df.columns),
+                },
+            }
+
+            return Response(analysis_result)
+
+        except Exception as e:
+            return Response(
+                {"detail": f"Analysis failed: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
