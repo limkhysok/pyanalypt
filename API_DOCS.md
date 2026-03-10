@@ -625,6 +625,127 @@ Get advanced statistical insights about the dataset, including correlations, mis
 
 ---
 
+### 25. Train Model (Model/Evaluate)
+Train a Machine Learning model on the dataset and return evaluation metrics. If clustering, it saves a new dataset containing the cluster IDs.
+
+- **Endpoint**: `POST /api/v1/datasets/items/<id>/train/`
+- **Auth Required**: Yes
+- **Request Body (KMeans Clustering)**:
+```json
+{
+  "model_type": "kmeans",
+  "features": ["price", "quantity", "age"],
+  "params": {
+    "n_clusters": 3
+  }
+}
+```
+- **Response (200 OK - KMeans)**:
+```json
+{
+  "evaluation": {
+    "silhouette_score": 0.6542,
+    "model": "KMeans",
+    "n_clusters": 3
+  },
+  "new_dataset": {
+    "columns": ["id", "price", "quantity", "age", "cluster_id"],
+    "rows": [...],
+    "metadata": {...},
+    "dataset_id": 15,
+    "name": "clustered_data.csv"
+  }
+}
+```
+- **Request Body (Linear Regression)**:
+```json
+{
+  "model_type": "linear_regression",
+  "features": ["quantity", "age"],
+  "target": "price"
+}
+```
+- **Response (200 OK - Linear Regression)**:
+```json
+{
+  "evaluation": {
+    "model": "Linear Regression",
+    "mean_squared_error": 12.54,
+    "r2_score": 0.89,
+    "coefficients": {
+      "quantity": 1.5,
+      "age": -0.2
+    },
+    "intercept": 5.0
+  }
+}
+```
+
+---
+
+### 26. Visualize Dataset (ECharts Formatting)
+Return structured data ready to be parsed by Apache ECharts on the frontend.
+
+- **Endpoint**: `POST /api/v1/datasets/items/<id>/visualize/`
+- **Auth Required**: Yes
+- **Request Body (Scatter / Line Plot)**:
+```json
+{
+  "chart_type": "scatter",
+  "x_axis": "age",
+  "y_axis": "price",
+  "category_col": "cluster_id"
+}
+```
+- **Response (200 OK - Scatter/Line)**:
+```json
+{
+  "series": [
+    {
+      "name": "0",
+      "data": [[35, 120.5], [40, 150.2]]
+    },
+    {
+      "name": "1",
+      "data": [[25, 80.0], [30, 95.5]]
+    }
+  ]
+}
+```
+- **Request Body (Bar Plot)**:
+```json
+{
+  "chart_type": "bar",
+  "x_axis": "category",
+  "y_axis": "sales"
+}
+```
+- **Response (200 OK - Bar)**:
+```json
+{
+  "xAxis": ["Electronics", "Clothing", "Food"],
+  "series": [
+    {
+      "name": "sales",
+      "data": [1500, 800, 1200]
+    }
+  ]
+}
+```
+
+---
+
+### 27. Export Dataset
+Download the dataset in a specified format.
+
+- **Endpoint**: `GET /api/v1/datasets/items/<id>/export/?format=csv`
+- **Auth Required**: Yes
+- **Query Parameters**:
+    - `format`: (String, optional) Explicit format to export as: `csv`, `excel`, `json`. Defaults to the original file format.
+- **Response (200 OK)**: File stream download (e.g. `Content-Type: text/csv` or `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`).
+
+---
+
 ## 📊 Error Responses
 
 ### Standard Error Format

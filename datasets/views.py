@@ -6,9 +6,13 @@ from rest_framework import viewsets, permissions, generics, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.core.files.base import ContentFile
+from django.http import HttpResponse
 from projects.models import Project
 from .models import ProjectDataset
 from .serializers import ProjectDatasetSerializer
+from sklearn.cluster import KMeans
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import silhouette_score, mean_squared_error, r2_score
 
 
 class CreateDatasetView(generics.CreateAPIView):
@@ -385,5 +389,309 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response(
                 {"detail": f"Analysis failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(detail=True, methods=["post"])
+    def train(self, request, pk=None):
+        """
+        Train a basic Machine Learning model on the dataset.
+        Supports: 'kmeans' (clustering) and 'linear_regression'
+        """
+        dataset = self.get_object()
+        file_path = dataset.file.path
+
+        model_type = request.data.get("model_type", "kmeans")
+        features = request.data.get("features", [])
+        target = request.data.get("target", None)
+
+        if not features:
+            return Response(
+                {"detail": "Features array is required for training."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            if dataset.file_format == "csv":
+                df = pd.read_csv(file_path)
+            elif dataset.file_format in ["xlsx", "xls"]:
+                df = pd.read_excel(file_path)
+            elif dataset.file_format == "json":
+                df = pd.read_json(file_path)
+            else:
+                return Response(
+                    {"detail": "Unsupported format for training."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Drop missing values for the selected columns
+            cols_to_check = features + ([target] if target else [])
+            df = df.dropna(subset=cols_to_check)
+
+            if df.empty:
+                return Response(
+                    {
+                        "detail": "Dataset is empty after dropping missing values for the selected features."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            X = df[features]
+
+            # Ensure X is numeric
+            if not all(pd.api.types.is_numeric_dtype(df[col]) for col in features):
+                return Response(
+                    {"detail": "All feature columns must be numeric."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if model_type == "kmeans":
+                n_clusters = int(request.data.get("params", {}).get("n_clusters", 3))
+                model = KMeans(n_clusters=n_clusters, random_state=42)
+                clusters = model.fit_predict(X)
+
+                # Add cluster back to dataframe
+                df["cluster_id"] = clusters
+
+                # Score
+                if len(set(clusters)) > 1:
+                    score = silhouette_score(X, clusters)
+                else:
+                    score = 0.0
+
+                # Create a new dataset record with the augmented data
+                new_name = f"clustered_{dataset.name}"
+                buf = io.BytesIO()
+                if dataset.file_format == "csv":
+                    df.to_csv(buf, index=False)
+                elif dataset.file_format in ["xlsx", "xls"]:
+                    df.to_excel(buf, index=False)
+                elif dataset.file_format == "json":
+                    df.to_json(buf)
+                buf.seek(0)
+
+                content_file = ContentFile(buf.read(), name=new_name)
+
+                new_dataset = ProjectDataset.objects.create(
+                    project=dataset.project,
+                    file=content_file,
+                    name=new_name,
+                    parent=dataset,
+                    is_cleaned=True,
+                    row_count=len(df),
+                    column_count=len(df.columns),
+                    file_format=dataset.file_format,
+                )
+
+                return Response(
+                    {
+                        "evaluation": {
+                            "silhouette_score": round(score, 4),
+                            "model": "KMeans",
+                            "n_clusters": n_clusters,
+                        },
+                        "new_dataset": self._get_preview_response(new_dataset, df),
+                    }
+                )
+
+            elif model_type == "linear_regression":
+                if not target:
+                    return Response(
+                        {"detail": "Target column is required for regression."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if not pd.api.types.is_numeric_dtype(df[target]):
+                    return Response(
+                        {"detail": "Target column must be numeric."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                y = df[target]
+                model = LinearRegression()
+                model.fit(X, y)
+                predictions = model.predict(X)
+
+                mse = mean_squared_error(y, predictions)
+                r2 = r2_score(y, predictions)
+
+                coeffs = dict(zip(features, model.coef_))
+
+                return Response(
+                    {
+                        "evaluation": {
+                            "model": "Linear Regression",
+                            "mean_squared_error": round(mse, 4),
+                            "r2_score": round(r2, 4),
+                            "coefficients": {k: round(v, 4) for k, v in coeffs.items()},
+                            "intercept": round(model.intercept_, 4),
+                        }
+                    }
+                )
+
+            else:
+                return Response(
+                    {"detail": f"Model type '{model_type}' not supported."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        except Exception as e:
+            return Response(
+                {"detail": f"Training failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(detail=True, methods=["post"])
+    def visualize(self, request, pk=None):
+        """
+        Return structured data for charts.
+        Supports: scatter, bar, line, pie
+        """
+        dataset = self.get_object()
+        file_path = dataset.file.path
+
+        chart_type = request.data.get("chart_type", "scatter")
+        x_axis = request.data.get("x_axis")
+        y_axis = request.data.get("y_axis")
+        category_col = request.data.get("category_col")
+
+        try:
+            if dataset.file_format == "csv":
+                df = pd.read_csv(file_path)
+            elif dataset.file_format in ["xlsx", "xls"]:
+                df = pd.read_excel(file_path)
+            elif dataset.file_format == "json":
+                df = pd.read_json(file_path)
+            else:
+                return Response(
+                    {"detail": "Unsupported format."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            required_cols = [c for c in [x_axis, y_axis, category_col] if c]
+            if not required_cols:
+                return Response(
+                    {"detail": "At least one axis or category column is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            df = df.dropna(subset=required_cols)
+
+            echarts_data = {}
+            if chart_type in ["scatter", "line"]:
+                if not x_axis or not y_axis:
+                    return Response(
+                        {"detail": "x_axis and y_axis are required."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                if category_col:
+                    series = []
+                    for name, group in df.groupby(category_col):
+                        series.append(
+                            {
+                                "name": str(name),
+                                "data": group[[x_axis, y_axis]].values.tolist(),
+                            }
+                        )
+                    echarts_data = {"series": series}
+                else:
+                    echarts_data = {
+                        "series": [
+                            {
+                                "name": "Data",
+                                "data": df[[x_axis, y_axis]].values.tolist(),
+                            }
+                        ]
+                    }
+            elif chart_type == "bar":
+                if not x_axis or not y_axis:
+                    return Response(
+                        {"detail": "x_axis and y_axis are required."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                grouped = df.groupby(x_axis)[y_axis].sum().reset_index()
+                echarts_data = {
+                    "xAxis": grouped[x_axis].tolist(),
+                    "series": [{"name": y_axis, "data": grouped[y_axis].tolist()}],
+                }
+            elif chart_type == "pie":
+                if not category_col or not y_axis:
+                    return Response(
+                        {"detail": "category_col and y_axis are required for pie."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                grouped = df.groupby(category_col)[y_axis].sum().reset_index()
+                pie_data = [
+                    {"name": str(row[category_col]), "value": row[y_axis]}
+                    for _, row in grouped.iterrows()
+                ]
+                echarts_data = {"series": [{"data": pie_data}]}
+            else:
+                return Response(
+                    {"detail": "Unsupported chart type."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            return Response(echarts_data)
+
+        except Exception as e:
+            return Response(
+                {"detail": f"Visualization generation failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(detail=True, methods=["get"])
+    def export(self, request, pk=None):
+        """
+        Export the dataset to a requested format (csv, json, excel).
+        """
+        dataset = self.get_object()
+        file_path = dataset.file.path
+        export_format = request.query_params.get("format", dataset.file_format).lower()
+
+        try:
+            if dataset.file_format == "csv":
+                df = pd.read_csv(file_path)
+            elif dataset.file_format in ["xlsx", "xls"]:
+                df = pd.read_excel(file_path)
+            elif dataset.file_format == "json":
+                df = pd.read_json(file_path)
+            else:
+                return Response(
+                    {"detail": "Unsupported input format."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            response = HttpResponse()
+            if export_format == "csv":
+                response["Content-Disposition"] = (
+                    f'attachment; filename="{dataset.name.split(".")[0]}.csv"'
+                )
+                response["Content-Type"] = "text/csv"
+                df.to_csv(response, index=False)
+            elif export_format in ["xlsx", "excel"]:
+                response["Content-Disposition"] = (
+                    f'attachment; filename="{dataset.name.split(".")[0]}.xlsx"'
+                )
+                response["Content-Type"] = (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                df.to_excel(response, index=False)
+            elif export_format == "json":
+                response["Content-Disposition"] = (
+                    f'attachment; filename="{dataset.name.split(".")[0]}.json"'
+                )
+                response["Content-Type"] = "application/json"
+                df.to_json(response, orient="records")
+            else:
+                return Response(
+                    {"detail": f"Unsupported export format: {export_format}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            return response
+
+        except Exception as e:
+            return Response(
+                {"detail": f"Export failed: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
