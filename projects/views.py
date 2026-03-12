@@ -1,4 +1,5 @@
 from rest_framework import viewsets, permissions
+from rest_framework.response import Response
 from .models import Project
 from .serializers import ProjectSerializer
 
@@ -19,3 +20,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # Additional safety to ensure user is set correctly
         serializer.save(user=self.request.user)
+
+    def retrieve(self, request, *args, **kwargs):
+        """
+        Override retrieve to update last_accessed_at whenever
+        a user opens/reads a specific project.
+        """
+        instance = self.get_object()
+        instance.mark_accessed()  # Update last_accessed_at timestamp
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
