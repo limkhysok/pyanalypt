@@ -7,12 +7,14 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.core.files.base import ContentFile
 from django.http import HttpResponse
-from projects.models import Project
 from .models import ProjectDataset
 from .serializers import ProjectDatasetSerializer
 from sklearn.cluster import KMeans
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import silhouette_score, mean_squared_error, r2_score
+
+# Error Messages
+ERR_UNSUPPORTED_FORMAT = "Unsupported format."
 
 
 class CreateDatasetView(generics.CreateAPIView):
@@ -25,13 +27,7 @@ class CreateDatasetView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
-        # Check ownership of the project
-        project = serializer.validated_data["project"]
-        if project.user != self.request.user:
-            raise permissions.exceptions.PermissionDenied(
-                "You do not own this project."
-            )
-        serializer.save()
+        serializer.save(user=self.request.user)
 
 
 class PasteDatasetView(generics.GenericAPIView):
@@ -43,24 +39,9 @@ class PasteDatasetView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
-        project_id = request.data.get("project")
         raw_data = request.data.get("raw_data")
         file_name = request.data.get("name", f"pasted_data_{uuid.uuid4().hex[:8]}")
         data_format = request.data.get("format", "csv").lower()
-
-        if not project_id:
-            return Response(
-                {"detail": "Project ID is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            project = Project.objects.get(id=project_id, user=request.user)
-        except Project.DoesNotExist:
-            return Response(
-                {"detail": "Project not found or access denied."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
 
         if not raw_data:
             return Response(
@@ -76,10 +57,13 @@ class PasteDatasetView(generics.GenericAPIView):
 
         # Save via serializer
         serializer = self.get_serializer(
-            data={"project": project.id, "file": content_file, "name": file_name}
+            data={
+                "file": content_file,
+                "name": file_name,
+            }
         )
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(user=self.request.user)
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -94,7 +78,7 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return ProjectDataset.objects.filter(project__user=self.request.user)
+        return ProjectDataset.objects.filter(user=self.request.user)
 
     def _get_preview_response(self, dataset, df, row_limit=10):
         """Helper to generate preview structure from a dataframe."""
@@ -144,7 +128,7 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
                 df = pd.read_json(file_path).head(row_limit + 100)
             else:
                 return Response(
-                    {"detail": "Unsupported format."},
+                    {"detail": ERR_UNSUPPORTED_FORMAT},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -167,146 +151,24 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
         file_path = dataset.file.path
 
         try:
-            # Load full dataframe for pipeline processing
-            if dataset.file_format == "csv":
-                df = pd.read_csv(file_path)
-            elif dataset.file_format in ["xlsx", "xls"]:
-                df = pd.read_excel(file_path)
-            elif dataset.file_format == "json":
-                df = pd.read_json(file_path)
-            else:
+            # Load full dataframe
+            df = self._load_dataframe(file_path, dataset.file_format)
+            if df is None:
                 return Response(
-                    {"detail": "Unsupported format for cleaning."},
+                    {"detail": f"{ERR_UNSUPPORTED_FORMAT} for cleaning."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             # Apply transformations
-            for step in pipeline:
-                op = step.get("operation")
-                params = step.get("params", {})
+            df = self._apply_cleaning_operations(df, pipeline)
 
-                if op == "handle_na":
-                    cols = params.get("columns", "all")
-                    strategy = params.get("strategy", "drop")
-                    target_cols = df.columns if cols == "all" else cols
-
-                    if strategy == "drop":
-                        df = df.dropna(subset=target_cols)
-                    elif strategy == "fill_zero":
-                        df[target_cols] = df[target_cols].fillna(0)
-                    elif strategy == "fill_mean":
-                        for c in target_cols:
-                            if pd.api.types.is_numeric_dtype(df[c]):
-                                df[c] = df[c].fillna(df[c].mean())
-                    elif strategy == "fill_median":
-                        for c in target_cols:
-                            if pd.api.types.is_numeric_dtype(df[c]):
-                                df[c] = df[c].fillna(df[c].median())
-
-                elif op == "drop_duplicates":
-                    cols = params.get("columns", "all")
-                    subset = None if cols == "all" else cols
-                    df = df.drop_duplicates(subset=subset)
-
-                elif op == "astype":
-                    col = params.get("column")
-                    target_type = params.get("target_type")
-                    if col in df.columns:
-                        try:
-                            if target_type == "int":
-                                df[col] = (
-                                    pd.to_numeric(df[col], errors="coerce")
-                                    .fillna(0)
-                                    .astype(int)
-                                )
-                            elif target_type == "float":
-                                df[col] = pd.to_numeric(
-                                    df[col], errors="coerce"
-                                ).astype(float)
-                            elif target_type == "string":
-                                df[col] = df[col].astype(str)
-                            elif target_type == "datetime":
-                                df[col] = pd.to_datetime(df[col], errors="coerce")
-                        except Exception as e:
-                            return Response(
-                                {
-                                    "detail": f"Type conversion failed for column '{col}': {str(e)}"
-                                },
-                                status=status.HTTP_400_BAD_REQUEST,
-                            )
-
-                elif op == "drop_columns":
-                    cols = params.get("columns", [])
-                    # Safety: don't drop everything
-                    if len(cols) < len(df.columns):
-                        df = df.drop(columns=[c for c in cols if c in df.columns])
-
-                elif op == "rename_columns":
-                    mapping = params.get("mapping", {})
-                    df = df.rename(columns=mapping)
-
-                elif op == "trim_strings":
-                    cols = params.get("columns", "all")
-                    target_cols = df.columns if cols == "all" else cols
-                    for c in target_cols:
-                        if pd.api.types.is_object_dtype(df[c]):
-                            df[c] = df[c].astype(str).str.strip()
-
-                elif op == "case_convert":
-                    cols = params.get("columns", [])
-                    case_type = params.get("case", "lower")
-                    for c in cols:
-                        if c in df.columns and pd.api.types.is_object_dtype(df[c]):
-                            if case_type == "lower":
-                                df[c] = df[c].astype(str).str.lower()
-                            elif case_type == "upper":
-                                df[c] = df[c].astype(str).str.upper()
-                            elif case_type == "title":
-                                df[c] = df[c].astype(str).str.title()
-
-                elif op == "replace_value":
-                    col = params.get("column")
-                    old_v = params.get("old_value")
-                    new_v = params.get("new_value")
-                    if col in df.columns:
-                        df[col] = df[col].replace(old_v, new_v)
-
-                elif op == "outlier_clip":
-                    cols = params.get("columns", [])
-                    low = params.get("lower_quantile", 0.05)
-                    high = params.get("upper_quantile", 0.95)
-                    for c in cols:
-                        if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-                            q_low = df[c].quantile(low)
-                            q_high = df[c].quantile(high)
-                            df[c] = df[c].clip(lower=q_low, upper=q_high)
-
-                elif op == "round_numeric":
-                    cols = params.get("columns", [])
-                    decimals = params.get("decimals", 2)
-                    for c in cols:
-                        if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-                            df[c] = df[c].round(decimals)
-
-            # Save cleaned version as a new dataset
-            new_name = f"cleaned_{dataset.name}"
-            # Ensure it doesn't get recursive 'cleaned_cleaned_'
-            if dataset.name.startswith("cleaned_"):
-                new_name = dataset.name
-
-            buf = io.BytesIO()
-            if dataset.file_format == "csv":
-                df.to_csv(buf, index=False)
-            elif dataset.file_format in ["xlsx", "xls"]:
-                df.to_excel(buf, index=False)
-            elif dataset.file_format == "json":
-                df.to_json(buf)
-            buf.seek(0)
-
+            # Save cleaned version
+            new_name = self._generate_cleaned_name(dataset.name)
+            buf = self._save_dataframe_to_buffer(df, dataset.file_format)
             content_file = ContentFile(buf.read(), name=new_name)
 
             new_dataset = ProjectDataset.objects.create(
-                project=dataset.project,
+                user=dataset.user,
                 file=content_file,
                 name=new_name,
                 parent=dataset,
@@ -316,7 +178,6 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
                 file_format=dataset.file_format,
             )
 
-            # Return the preview of the NEW dataset
             return Response(self._get_preview_response(new_dataset, df))
 
         except Exception as e:
@@ -324,6 +185,144 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
                 {"detail": f"Cleaning failed: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+    def _load_dataframe(self, path, file_format):
+        if file_format == "csv":
+            return pd.read_csv(path)
+        if file_format in ["xlsx", "xls"]:
+            return pd.read_excel(path)
+        if file_format == "json":
+            return pd.read_json(path)
+        return None
+
+    def _apply_cleaning_operations(self, df, pipeline):
+        for step in pipeline:
+            op = step.get("operation")
+            params = step.get("params", {})
+            df = self._execute_operation(df, op, params)
+        return df
+
+    def _execute_operation(self, df, op, params):
+        if op == "handle_na":
+            return self._op_handle_na(df, params)
+        if op == "drop_duplicates":
+            return self._op_drop_duplicates(df, params)
+        if op == "astype":
+            return self._op_astype(df, params)
+        if op == "drop_columns":
+            return self._op_drop_columns(df, params)
+        if op == "rename_columns":
+            return df.rename(columns=params.get("mapping", {}))
+        if op == "trim_strings":
+            return self._op_trim_strings(df, params)
+        if op == "case_convert":
+            return self._op_case_convert(df, params)
+        if op == "replace_value":
+            return self._op_replace_value(df, params)
+        if op == "outlier_clip":
+            return self._op_outlier_clip(df, params)
+        if op == "round_numeric":
+            return self._op_round_numeric(df, params)
+        return df
+
+    def _op_handle_na(self, df, params):
+        cols = params.get("columns", "all")
+        strategy = params.get("strategy", "drop")
+        target_cols = df.columns if cols == "all" else cols
+        if strategy == "drop":
+            return df.dropna(subset=target_cols)
+        if strategy == "fill_zero":
+            df[target_cols] = df[target_cols].fillna(0)
+        elif strategy == "fill_mean":
+            for c in target_cols:
+                if pd.api.types.is_numeric_dtype(df[c]):
+                    df[c] = df[c].fillna(df[c].mean())
+        elif strategy == "fill_median":
+            for c in target_cols:
+                if pd.api.types.is_numeric_dtype(df[c]):
+                    df[c] = df[c].fillna(df[c].median())
+        return df
+
+    def _op_drop_duplicates(self, df, params):
+        cols = params.get("columns", "all")
+        subset = None if cols == "all" else cols
+        return df.drop_duplicates(subset=subset)
+
+    def _op_astype(self, df, params):
+        col, target_type = params.get("column"), params.get("target_type")
+        if col not in df.columns:
+            return df
+        if target_type == "int":
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+        elif target_type == "float":
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+        elif target_type == "string":
+            df[col] = df[col].astype(str)
+        elif target_type == "datetime":
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+        return df
+
+    def _op_drop_columns(self, df, params):
+        cols = params.get("columns", [])
+        if len(cols) < len(df.columns):
+            return df.drop(columns=[c for c in cols if c in df.columns])
+        return df
+
+    def _op_trim_strings(self, df, params):
+        cols = params.get("columns", "all")
+        target_cols = df.columns if cols == "all" else cols
+        for c in target_cols:
+            if pd.api.types.is_object_dtype(df[c]):
+                df[c] = df[c].astype(str).str.strip()
+        return df
+
+    def _op_case_convert(self, df, params):
+        cols, case_type = params.get("columns", []), params.get("case", "lower")
+        for c in cols:
+            if c in df.columns and pd.api.types.is_object_dtype(df[c]):
+                if case_type == "lower":
+                    df[c] = df[c].astype(str).str.lower()
+                elif case_type == "upper":
+                    df[c] = df[c].astype(str).str.upper()
+                elif case_type == "title":
+                    df[c] = df[c].astype(str).str.title()
+        return df
+
+    def _op_replace_value(self, df, params):
+        col, old_v, new_v = params.get("column"), params.get("old_value"), params.get("new_value")
+        if col in df.columns:
+            df[col] = df[col].replace(old_v, new_v)
+        return df
+
+    def _op_outlier_clip(self, df, params):
+        cols = params.get("columns", [])
+        low, high = params.get("lower_quantile", 0.05), params.get("upper_quantile", 0.95)
+        for c in cols:
+            if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+                q_low, q_high = df[c].quantile(low), df[c].quantile(high)
+                df[c] = df[c].clip(lower=q_low, upper=q_high)
+        return df
+
+    def _op_round_numeric(self, df, params):
+        cols, decimals = params.get("columns", []), params.get("decimals", 2)
+        for c in cols:
+            if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+                df[c] = df[c].round(decimals)
+        return df
+
+    def _generate_cleaned_name(self, original_name):
+        return original_name if original_name.startswith("cleaned_") else f"cleaned_{original_name}"
+
+    def _save_dataframe_to_buffer(self, df, file_format):
+        buf = io.BytesIO()
+        if file_format == "csv":
+            df.to_csv(buf, index=False)
+        elif file_format in ["xlsx", "xls"]:
+            df.to_excel(buf, index=False)
+        elif file_format == "json":
+            df.to_json(buf)
+        buf.seek(0)
+        return buf
 
     @action(detail=True, methods=["get"])
     def analyze(self, request, pk=None):
@@ -343,7 +342,7 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
                 df = pd.read_json(file_path)
             else:
                 return Response(
-                    {"detail": "Unsupported format for analysis."},
+                    {"detail": f"{ERR_UNSUPPORTED_FORMAT} for analysis."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -395,150 +394,92 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def train(self, request, pk=None):
         """
-        Train a basic Machine Learning model on the dataset.
-        Supports: 'kmeans' (clustering) and 'linear_regression'
+        Train a Machine Learning model.
+        Supports: 'kmeans', 'linear_regression'
         """
         dataset = self.get_object()
         file_path = dataset.file.path
-
         model_type = request.data.get("model_type", "kmeans")
-        features = request.data.get("features", [])
-        target = request.data.get("target", None)
+        features, target = request.data.get("features", []), request.data.get("target")
 
         if not features:
-            return Response(
-                {"detail": "Features array is required for training."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Features required."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            if dataset.file_format == "csv":
-                df = pd.read_csv(file_path)
-            elif dataset.file_format in ["xlsx", "xls"]:
-                df = pd.read_excel(file_path)
-            elif dataset.file_format == "json":
-                df = pd.read_json(file_path)
-            else:
-                return Response(
-                    {"detail": "Unsupported format for training."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            df = self._load_dataframe(file_path, dataset.file_format)
+            if df is None:
+                return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Drop missing values for the selected columns
-            cols_to_check = features + ([target] if target else [])
-            df = df.dropna(subset=cols_to_check)
-
+            df = df.dropna(subset=features + ([target] if target else []))
             if df.empty:
-                return Response(
-                    {
-                        "detail": "Dataset is empty after dropping missing values for the selected features."
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"detail": "Empty dataset after dropping NAs."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if not all(pd.api.types.is_numeric_dtype(df[col]) for col in features):
+                return Response({"detail": "Features must be numeric."}, status=status.HTTP_400_BAD_REQUEST)
 
             X = df[features]
-
-            # Ensure X is numeric
-            if not all(pd.api.types.is_numeric_dtype(df[col]) for col in features):
-                return Response(
-                    {"detail": "All feature columns must be numeric."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
             if model_type == "kmeans":
-                n_clusters = int(request.data.get("params", {}).get("n_clusters", 3))
-                model = KMeans(n_clusters=n_clusters, random_state=42)
-                clusters = model.fit_predict(X)
+                return self._train_kmeans(dataset, df, X, request.data.get("params", {}))
+            if model_type == "linear_regression":
+                return self._train_linear_regression(df, X, target)
 
-                # Add cluster back to dataframe
-                df["cluster_id"] = clusters
-
-                # Score
-                if len(set(clusters)) > 1:
-                    score = silhouette_score(X, clusters)
-                else:
-                    score = 0.0
-
-                # Create a new dataset record with the augmented data
-                new_name = f"clustered_{dataset.name}"
-                buf = io.BytesIO()
-                if dataset.file_format == "csv":
-                    df.to_csv(buf, index=False)
-                elif dataset.file_format in ["xlsx", "xls"]:
-                    df.to_excel(buf, index=False)
-                elif dataset.file_format == "json":
-                    df.to_json(buf)
-                buf.seek(0)
-
-                content_file = ContentFile(buf.read(), name=new_name)
-
-                new_dataset = ProjectDataset.objects.create(
-                    project=dataset.project,
-                    file=content_file,
-                    name=new_name,
-                    parent=dataset,
-                    is_cleaned=True,
-                    row_count=len(df),
-                    column_count=len(df.columns),
-                    file_format=dataset.file_format,
-                )
-
-                return Response(
-                    {
-                        "evaluation": {
-                            "silhouette_score": round(score, 4),
-                            "model": "KMeans",
-                            "n_clusters": n_clusters,
-                        },
-                        "new_dataset": self._get_preview_response(new_dataset, df),
-                    }
-                )
-
-            elif model_type == "linear_regression":
-                if not target:
-                    return Response(
-                        {"detail": "Target column is required for regression."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                if not pd.api.types.is_numeric_dtype(df[target]):
-                    return Response(
-                        {"detail": "Target column must be numeric."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                y = df[target]
-                model = LinearRegression()
-                model.fit(X, y)
-                predictions = model.predict(X)
-
-                mse = mean_squared_error(y, predictions)
-                r2 = r2_score(y, predictions)
-
-                coeffs = dict(zip(features, model.coef_))
-
-                return Response(
-                    {
-                        "evaluation": {
-                            "model": "Linear Regression",
-                            "mean_squared_error": round(mse, 4),
-                            "r2_score": round(r2, 4),
-                            "coefficients": {k: round(v, 4) for k, v in coeffs.items()},
-                            "intercept": round(model.intercept_, 4),
-                        }
-                    }
-                )
-
-            else:
-                return Response(
-                    {"detail": f"Model type '{model_type}' not supported."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            return Response({"detail": f"Model '{model_type}' not supported."}, status=status.HTTP_400_BAD_REQUEST)
 
         except Exception as e:
-            return Response(
-                {"detail": f"Training failed: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return Response({"detail": f"Training failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def _train_kmeans(self, dataset, df, X, params):
+        n_clusters = int(params.get("n_clusters", 3))
+        model = KMeans(n_clusters=n_clusters, random_state=42)
+        clusters = model.fit_predict(X)
+        df["cluster_id"] = clusters
+
+        if len(set(clusters)) > 1:
+            score = silhouette_score(X, clusters, random_state=42)
+        else:
+            score = 0.0
+
+        new_name = f"clustered_{dataset.name}"
+        buf = self._save_dataframe_to_buffer(df, dataset.file_format)
+        content_file = ContentFile(buf.read(), name=new_name)
+
+        new_dataset = ProjectDataset.objects.create(
+            user=dataset.user,
+            file=content_file,
+            name=new_name,
+            parent=dataset,
+            is_cleaned=True,
+            row_count=len(df),
+            column_count=len(df.columns),
+            file_format=dataset.file_format,
+        )
+
+        return Response({
+            "evaluation": {"silhouette_score": round(score, 4), "model": "KMeans", "n_clusters": n_clusters},
+            "new_dataset": self._get_preview_response(new_dataset, df)
+        })
+
+    def _train_linear_regression(self, df, X, target):
+        if not target or not pd.api.types.is_numeric_dtype(df[target]):
+            return Response({"detail": "Numeric target required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        y = df[target]
+        model = LinearRegression()
+        model.fit(X, y)
+        predictions = model.predict(X)
+
+        mse, r2 = mean_squared_error(y, predictions), r2_score(y, predictions)
+        coeffs = dict(zip(X.columns, model.coef_))
+
+        return Response({
+            "evaluation": {
+                "model": "Linear Regression",
+                "mean_squared_error": round(mse, 4),
+                "r2_score": round(r2, 4),
+                "coefficients": {k: round(v, 4) for k, v in coeffs.items()},
+                "intercept": round(model.intercept_, 4),
+            }
+        })
 
     @action(detail=True, methods=["post"])
     def visualize(self, request, pk=None):
@@ -550,94 +491,53 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
         file_path = dataset.file.path
 
         chart_type = request.data.get("chart_type", "scatter")
-        x_axis = request.data.get("x_axis")
-        y_axis = request.data.get("y_axis")
-        category_col = request.data.get("category_col")
+        x_axis, y_axis, category_col = request.data.get("x_axis"), request.data.get("y_axis"), request.data.get("category_col")
 
         try:
-            if dataset.file_format == "csv":
-                df = pd.read_csv(file_path)
-            elif dataset.file_format in ["xlsx", "xls"]:
-                df = pd.read_excel(file_path)
-            elif dataset.file_format == "json":
-                df = pd.read_json(file_path)
-            else:
-                return Response(
-                    {"detail": "Unsupported format."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            df = self._load_dataframe(file_path, dataset.file_format)
+            if df is None:
+                return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
 
             required_cols = [c for c in [x_axis, y_axis, category_col] if c]
             if not required_cols:
-                return Response(
-                    {"detail": "At least one axis or category column is required."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"detail": "At least one axis or category column is required."}, status=status.HTTP_400_BAD_REQUEST)
+
             df = df.dropna(subset=required_cols)
-
-            echarts_data = {}
-            if chart_type in ["scatter", "line"]:
-                if not x_axis or not y_axis:
-                    return Response(
-                        {"detail": "x_axis and y_axis are required."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                if category_col:
-                    series = []
-                    for name, group in df.groupby(category_col):
-                        series.append(
-                            {
-                                "name": str(name),
-                                "data": group[[x_axis, y_axis]].values.tolist(),
-                            }
-                        )
-                    echarts_data = {"series": series}
-                else:
-                    echarts_data = {
-                        "series": [
-                            {
-                                "name": "Data",
-                                "data": df[[x_axis, y_axis]].values.tolist(),
-                            }
-                        ]
-                    }
-            elif chart_type == "bar":
-                if not x_axis or not y_axis:
-                    return Response(
-                        {"detail": "x_axis and y_axis are required."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                grouped = df.groupby(x_axis)[y_axis].sum().reset_index()
-                echarts_data = {
-                    "xAxis": grouped[x_axis].tolist(),
-                    "series": [{"name": y_axis, "data": grouped[y_axis].tolist()}],
-                }
-            elif chart_type == "pie":
-                if not category_col or not y_axis:
-                    return Response(
-                        {"detail": "category_col and y_axis are required for pie."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                grouped = df.groupby(category_col)[y_axis].sum().reset_index()
-                pie_data = [
-                    {"name": str(row[category_col]), "value": row[y_axis]}
-                    for _, row in grouped.iterrows()
-                ]
-                echarts_data = {"series": [{"data": pie_data}]}
-            else:
-                return Response(
-                    {"detail": "Unsupported chart type."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            return Response(echarts_data)
+            return Response(self._build_chart_data(df, chart_type, x_axis, y_axis, category_col))
 
         except Exception as e:
-            return Response(
-                {"detail": f"Visualization generation failed: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return Response({"detail": f"Visualization generation failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def _build_chart_data(self, df, chart_type, x_axis, y_axis, category_col):
+        if chart_type in ["scatter", "line"]:
+            return self._build_scatter_line(df, x_axis, y_axis, category_col)
+        if chart_type == "bar":
+            return self._build_bar(df, x_axis, y_axis)
+        if chart_type == "pie":
+            return self._build_pie(df, y_axis, category_col)
+        raise ValueError("Unsupported chart type")
+
+    def _build_scatter_line(self, df, x_axis, y_axis, category_col):
+        if not x_axis or not y_axis:
+            raise ValueError("x_axis and y_axis are required")
+        if category_col:
+            series = []
+            for name, group in df.groupby(category_col):
+                series.append({"name": str(name), "data": group[[x_axis, y_axis]].values.tolist()})
+            return {"series": series}
+        return {"series": [{"name": "Data", "data": df[[x_axis, y_axis]].values.tolist()}]}
+
+    def _build_bar(self, df, x_axis, y_axis):
+        if not x_axis or not y_axis:
+            raise ValueError("x_axis and y_axis are required")
+        grouped = df.groupby(x_axis)[y_axis].sum().reset_index()
+        return {"xAxis": grouped[x_axis].tolist(), "series": [{"name": y_axis, "data": grouped[y_axis].tolist()}]}
+
+    def _build_pie(self, df, y_axis, category_col):
+        if not category_col or not y_axis:
+            raise ValueError("category_col and y_axis are required")
+        grouped = df.groupby(category_col)[y_axis].sum().reset_index()
+        return {"series": [{"data": [{"name": str(row[category_col]), "value": row[y_axis]} for _, row in grouped.iterrows()]}]}
 
     @action(detail=True, methods=["get"])
     def export(self, request, pk=None):

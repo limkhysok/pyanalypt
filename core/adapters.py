@@ -50,52 +50,51 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
         user = super().populate_user(request, sociallogin, data)
 
         if sociallogin.account.provider == "google":
-            # Extract data from Google OAuth response
             extra_data = sociallogin.account.extra_data
+            self._extract_google_names(user, extra_data)
+            self._extract_google_picture(user, extra_data)
+            self._verify_google_email(user, extra_data)
 
-            # Populate name fields
-            user.first_name = extra_data.get("given_name", "") or extra_data.get(
-                "first_name", ""
-            )
-            user.last_name = extra_data.get("family_name", "") or extra_data.get(
-                "last_name", ""
-            )
-
-            # Generate full_name from first + last name
-            full_name = extra_data.get("name", "")
-            if not full_name and user.first_name and user.last_name:
-                full_name = f"{user.first_name} {user.last_name}"
-            user.full_name = full_name
-
-            # Set profile picture from Google
-            picture_url = extra_data.get("picture", "")
-            if picture_url:
-                # Ensure it's HTTPS
-                if picture_url.startswith("http://"):
-                    picture_url = picture_url.replace("http://", "https://")
-                user.profile_picture = picture_url
-
-            # Mark email as verified (Google pre-verifies emails)
-            if extra_data.get("verified_email", False) or extra_data.get(
-                "email_verified", False
-            ):
-                user.email_verified = True
-
-            # Generate username from email if not provided
             if not user.username:
-                # Use email prefix as username
-                email_prefix = user.email.split("@")[0]
-                # Make it unique by appending random string if needed
-                username = email_prefix
-                from core.models import AuthUser
-
-                counter = 1
-                while AuthUser.objects.filter(username=username).exists():
-                    username = f"{email_prefix}{counter}"
-                    counter += 1
-                user.username = username
+                user.username = self._generate_unique_username(user.email)
 
         return user
+
+    def _extract_google_names(self, user, extra_data):
+        user.first_name = extra_data.get("given_name", "") or extra_data.get(
+            "first_name", ""
+        )
+        user.last_name = extra_data.get("family_name", "") or extra_data.get(
+            "last_name", ""
+        )
+        full_name = extra_data.get("name", "")
+        if not full_name and user.first_name and user.last_name:
+            full_name = f"{user.first_name} {user.last_name}"
+        user.full_name = full_name
+
+    def _extract_google_picture(self, user, extra_data):
+        picture_url = extra_data.get("picture", "")
+        if picture_url:
+            if picture_url.startswith("http://"):
+                picture_url = picture_url.replace("http://", "https://")
+            user.profile_picture = picture_url
+
+    def _verify_google_email(self, user, extra_data):
+        if extra_data.get("verified_email", False) or extra_data.get(
+            "email_verified", False
+        ):
+            user.email_verified = True
+
+    def _generate_unique_username(self, email):
+        from core.models import AuthUser
+
+        email_prefix = email.split("@")[0]
+        username = email_prefix
+        counter = 1
+        while AuthUser.objects.filter(username=username).exists():
+            username = f"{email_prefix}{counter}"
+            counter += 1
+        return username
 
     def save_user(self, request, sociallogin, form=None):
         """

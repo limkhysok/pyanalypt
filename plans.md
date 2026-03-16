@@ -1,97 +1,77 @@
-# Project Plan: Decoupled Full-Stack Data Analyzer (2026)
+# Project Plan: PyAnalypt (Real-World Data Analysis Workflow)
 
-## 1. System Architecture Overview
-A modern "Headless" approach where the frontend and backend are independent, backed by a robust relational database.
-
-*   **Frontend:** React (TypeScript) + NextJS + (Shadcn UI for components like buttons..) (Apache ECharts for Visualization)
-*   **Backend:** Django + Django Rest Framework (DRF).
-*   **Database:** PostgreSQL (Local Database) Psycopg 3.
-*   **Data Processing:** Pandas + Scikit-Learn.
-*   **Cache:** Redis (for high-speed DataFrame access).
+## Core Technologies
+- **Backend:** Django + DRF, Pandas, Scikit-learn, PostgreSQL, Redis.
+- **Frontend:** Next.js (TypeScript), Shadcn UI, Apache ECharts.
 
 ---
 
-## Phase 1: Persistence Layer (PostgreSQL Setup)
-**Goal:** Establish a permanent source of truth for files, users, and analysis results.
+## Part 1: Backend (The Data Engine)
 
-1.  **Database Connection:** Initialize PostgreSQL
-2.  **Schema Design:**
-    *   `UserFile` Model: Store file metadata (original name, file size, storage path).
-    *   `AnalysisResult` Model: Use a **JSONB** column to store summary statistics (mean, median, min/max) so you don't have to re-calculate them using Pandas every time the page loads.
-3.  **Relational Integrity:** Link every uploaded file to a unique `session_id` or `user_id` to ensure data privacy.
+### 1. Ingestion & Persistence (Import)
+- [x] **Database Setup:** Initialize PostgreSQL for users, datasets, and analysis metadata.
+- [x] **File Processing:** Implement `datasets` app to handle CSV/Excel/JSON uploads linked directly to the User.
+- [ ] **Data Versioning:** Support "Dataset Versions" so cleaning creates new records linked to the original file.
 
----
+### 2. Diagnostic Engine (Identifying Issues)
+- [ ] **Profiling Utility:** Use Pandas to detect:
+    - Missing values (counts and percentages per column).
+    - Duplicate rows.
+    - Data type inconsistencies (e.g., numbers stored as strings).
+    - Outliers using Z-Score or IQR methods.
 
-## Phase 2: Backend Foundation (The API)
-**Goal:** Setup a server that acts as a data engine.
+### 3. Wrangling Service (Data Cleaning)
+- [ ] **Cleaning Pipelines:** Build API endpoints to apply:
+    - Missing value imputation (Mean, Median, Mode, or Constant).
+    - Row/Column dropping.
+    - Data type casting.
+    - String sanitization (trimging, case normalization).
 
-1.  **Environment Setup:** Initialize Django with `djangorestframework`, `django-cors-headers`, and `django-environ` for DB credentials.
-2.  **CORS Configuration:** Whitelist the React frontend (typically `localhost:5173`).
-3.  **Migration:** Run initial migrations to build the PostgreSQL tables for file tracking.
+### 4. Descriptive Engine (EDA)
+- [ ] **Statistical Profiling:** Calculate summary statistics (Mean, Median, Std Dev, Min/Max, Quartiles).
+- [ ] **Relationship Discovery:** Generate correlation matrices and cross-tabulations.
 
----
-
-## Phase 3: The Data Engine (Pandas Utility)
-**Goal:** Abstract data manipulation away from the API views.
-
-1.  **Ingestion:** Create `data_engine.py` to read CSVs and load them into Pandas.
-2.  **Cleaning:** Standardize column names (lowercase, no spaces) for TypeScript compatibility.
-3.  **Profiling:** Detect "Numeric" vs "Categorical" columns and save this metadata into the **PostgreSQL JSONB** field for instant retrieval.
-
----
-
-## Phase 4: The Frontend (NextJS, TypeScript, Shadcn UI & Visualization)
-**Goal:** Build a type-safe UI for visual rendering.
-
-1.  **State Management:** Use React hooks to manage the `uploadedData` and `selectedFeatures`.
-2.  **Component Architecture:**
-    *   `FileUploader`: Posts CSVs to the API.
-    *   `ControlPanel`: Fetches column metadata from the PostgreSQL-backed API.
-    *   `Visualizer`: Renders data via Apache ECharts.
-3.  **Type Safety:** Match TypeScript interfaces to the PostgreSQL schema.
+### 5. API Visualization Bridge
+- [ ] **Chart Formatter:** Convert Pandas DataFrames into lean JSON structures specifically for Apache ECharts (Scatter, Bar, Line).
 
 ---
 
-## Phase 5: Full-Stack Integration (The Flow)
-**Goal:** Connect layers via REST endpoints.
+## Part 2: Frontend (The Analysis Workspace)
 
-1.  **Upload Flow:** Frontend POSTs file -> Django saves file to disk -> Django creates a record in **PostgreSQL** -> returns `file_id`.
-2.  **Processing Flow:** Frontend sends `file_id` + `axes` -> Django fetches file path from **PostgreSQL** -> Pandas processes -> returns JSON.
-3.  **JSON Exchange:** Return lean JSON arrays for optimal chart performance.
+### 1. Import Workspace
+- [ ] **Multi-Source Upload:** Drag-and-drop file uploader and custom "Paste Data" text area.
+- [ ] **Home Dashboard:** Visual inventory of all data analysis datasets.
 
----
+### 2. Diagnosis Dashboard (Identifying Issues)
+- [ ] **Quality Report:** Visual cards showing "% of missing data" and "Dirty Data" warnings.
+- [ ] **Inconsistency Highlighting:** UI that highlights columns with potential issues.
 
-## Phase 6: The Intelligence Layer (Machine Learning)
-**Goal:** Add server-side analytical power.
+### 3. Cleaning Interface (Wrangling)
+- [ ] **Command Center:** Interactive sidebar where users can select cleaning operations and preview changes.
+- [ ] **History Logs:** Show what cleaning steps were applied to the dataset.
 
-1.  **Clustering Logic:** Use `scikit-learn` (KMeans) on the backend.
-2.  **Augmented Data:** Add `cluster_id` to the JSON response.
-3.  **Visual Mapping:** ECharts colors points based on the `cluster_id`.
+### 4. Exploratory Dashboard (EDA)
+- [ ] **Table View:** High-performance data grid with sorting and filtering.
+- [ ] **Stat Cards:** Quick-glance cards for core dataset metrics.
 
----
+### 5. Visualization Studio
+- [ ] **Chart Builder:** Interactive axis selection (X-axis, Y-axis, Color/Group-by).
+- [ ] **Theme System:** Professional "Business Intelligence" styles for all ECharts.
 
-## Phase 7: The "Glue" (State & Persistence)
-**Goal:** Ensure the app survives browser refreshes.
-
-1.  **Session Handshake:** Store the `short_uuid` in **PostgreSQL** to map anonymous sessions to specific data files.
-2.  **Memory Management:** Integrate **Redis** to cache the Pandas DataFrames in RAM for 30 minutes, using the PostgreSQL `file_id` as the cache key.
-3.  **Data Integrity:** Sanitize `NaN/Infinity` values before they leave the Python environment.
-
----
-
-## Phase 8: The Shield (Security & Robustness)
-**Goal:** Protect the server and database.
-
-1.  **Secure File Ingestion:** Validate file signatures (Magic Numbers) and sanitize filenames.
-2.  **Database Security:** Use Django’s ORM to prevent SQL injection; use `HttpOnly` cookies for any session tokens.
-3.  **Data Sanitization:** Use `DOMPurify` on the frontend for any dynamic labels stored in the DB.
+### 6. Insight & Reporting
+- [ ] **Annotation System:** Allow users to add notes/insights directly next to visualizations.
+- [ ] **Export Center:** Download cleaned datasets and save visualizations as PNG/PDF.
 
 ---
 
+## Optional: Advanced Analytics (ML)
+*Note: This is an "add-on" for predictive tasks, not the core focus.*
+- [ ] **KMeans Clustering:** To find hidden segments in customer/sales data.
+- [ ] **Linear Regression:** To predict simple future trends based on historical values.
 
+---
 
-## PROJECT CORE
-
-# Input: Support .csv, .xlsx, .json, .html, .xml, .parquet,
-# Output: Support .png (default), .jpg, .pdf, .html, .xlsx
-# pip install kaleido (for .pdf file format)
+## Technical Specifications
+- **Input Formats:** .csv, .xlsx, .json, .html, .xml, .parquet
+- **Output Formats:** .png (default), .jpg, .pdf, .html, .xlsx
+- **Key Python Libs:** `pandas`, `openpyxl`, `scikit-learn`, `kaleido` (for PDF)

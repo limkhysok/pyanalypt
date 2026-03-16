@@ -58,7 +58,6 @@ INSTALLED_APPS = [
     "django.contrib.sites",
     # Local apps
     "core",
-    "projects",
     "datasets",
 ]
 
@@ -263,10 +262,9 @@ SITE_ID = 1
 
 # ===== ALLAUTH ACCOUNT SETTINGS =====
 # Signup/Login Configuration
-ACCOUNT_LOGIN_METHODS = {"email"}
-ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*", "password2*"]
+ACCOUNT_LOGIN_METHODS = {"username", "email"}
+# Default signup fields (username/password) are used.
 ACCOUNT_UNIQUE_EMAIL = True
-ACCOUNT_EMAIL_VERIFICATION = "optional"
 ACCOUNT_USER_MODEL_USERNAME_FIELD = "username"
 
 # Email Verification

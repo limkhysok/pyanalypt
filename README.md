@@ -86,20 +86,15 @@ The app will be available at: `http://localhost:8000/`
 **Base URL**: `/api/v1/`
 
 ### Authentication
-- `POST /auth/registration/` - Register new user
-- `POST /auth/login/` - Login with email/password
+- `POST /auth/registration/` - Register with username/password
+- `POST /auth/login/` - Login with username or email
 - `POST /auth/logout/` - Logout
 - `GET /auth/user/` - Get current user
-- `PUT /auth/user/` - Update user (full)
-- `PATCH /auth/user/` - Update user (partial)
-- `POST /auth/token/` - Get JWT token
+- `PATCH /auth/user/` - Update user profile
 - `POST /auth/token/refresh/` - Refresh JWT token
 
 ### OAuth
-- `GET /accounts/google/login/` - Google OAuth login
-
-### File Operations
-- `POST /upload/` - Upload file for analysis
+- `POST /auth/google/` - Google OAuth login (backend exchange)
 
 See **[API_DOCS.md](API_DOCS.md)** for complete documentation.
 
@@ -112,7 +107,6 @@ pyanalypt/
 ├── config/              # Django settings and main URLs
 ├── core/                # Core application
 ├── datasets/            # Dataset management
-├── projects/            # Project management
 ├── .env                 # Environment variables
 ├── Dockerfile           # Docker image configuration
 ├── docker-compose.yml   # Multi-container orchestration

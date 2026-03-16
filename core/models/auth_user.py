@@ -9,19 +9,20 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 
 class AuthUserManager(BaseUserManager):
     """
-    Custom manager for AuthUser where email is the unique identifier
-    for authentication instead of usernames.
+    Custom manager for AuthUser where username is the primary identifier.
     """
-    def create_user(self, email, password=None, **extra_fields):
-        if not email:
-            raise ValueError("The Email field must be set")
-        email = self.normalize_email(email)
-        user = self.model(email=email, **extra_fields)
+    def create_user(self, username, password=None, **extra_fields):
+        if not username:
+            raise ValueError("The Username field must be set")
+        email = extra_fields.get("email")
+        if email:
+            extra_fields["email"] = self.normalize_email(email)
+        user = self.model(username=username, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, password=None, **extra_fields):
+    def create_superuser(self, username, password=None, **extra_fields):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
@@ -31,7 +32,7 @@ class AuthUserManager(BaseUserManager):
         if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True.")
 
-        return self.create_user(email, password, **extra_fields)
+        return self.create_user(username, password, **extra_fields)
 
 
 # Custom User Model for pyanalypt
@@ -74,12 +75,12 @@ class AuthUser(AbstractUser):
         ],
     )
 
-    # username: Alphanumeric + underscores/hyphens/dots, min 3 chars, unique (Optional in form)
+    # username: Alphanumeric + underscores/hyphens/dots, min 3 chars, unique
     username = models.CharField(
         max_length=150,
         unique=True,
-        null=True,
-        blank=True,
+        null=False,
+        blank=False,
         validators=[
             RegexValidator(
                 regex=r"^[a-zA-Z0-9._-]+$",
@@ -107,10 +108,12 @@ class AuthUser(AbstractUser):
             MaxLengthValidator(255),
         ],
     )
-    # email: Unique, valid email format, domain validation
+    # email: Unique, valid email format, domain validation (Optional)
     email = models.EmailField(
         unique=True,
         max_length=254,
+        null=True,
+        blank=True,
         validators=[
             RegexValidator(
                 regex=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
@@ -183,8 +186,8 @@ class AuthUser(AbstractUser):
         help_text="URL to the user's profile picture (typically from Google OAuth or uploaded to CDN).",
     )
 
-    # USERNAME_FIELD defines what field is used for login (we use email)
-    USERNAME_FIELD = "email"
+    # USERNAME_FIELD defines what field is used for login (we use username)
+    USERNAME_FIELD = "username"
     REQUIRED_FIELDS = []
 
     class Meta:
@@ -195,27 +198,15 @@ class AuthUser(AbstractUser):
         ordering = ["-date_joined"]
 
     def __str__(self):
-        return self.email
+        return self.username
 
     def save(self, *args, **kwargs):
         """
-        Override save to auto-generate username and full_name if not provided.
-        Ensures email is lowercase for consistency.
+        Override save to ensure email is lowercase for consistency.
         """
         # Normalize email to lowercase
         if self.email:
             self.email = self.email.lower()
-
-        # Auto-generate username from email if not provided
-        if not self.username and self.email:
-            base_username = self.email.split("@")[0]
-            # Ensure it meets min length and regex
-            clean_username = "".join(
-                c for c in base_username if c.isalnum() or c in "._-"
-            )
-            if len(clean_username) < 3:
-                clean_username = clean_username + "user"
-            self.username = clean_username
 
         # Auto-generate full_name if not provided
         if not self.full_name and self.first_name and self.last_name:
@@ -226,4 +217,8 @@ class AuthUser(AbstractUser):
     @property
     def display_name(self):
         """Returns the user's preferred display name."""
-        return self.full_name or f"{self.first_name} {self.last_name}" or self.username
+        if self.full_name:
+            return self.full_name
+        if self.first_name and self.last_name:
+            return f"{self.first_name} {self.last_name}"
+        return self.username

@@ -1,17 +1,21 @@
 import os
 import pandas as pd
 from django.db import models
-from projects.models import Project
+from django.conf import settings
 from .validators import validate_file_size_and_type
 
 
 class ProjectDataset(models.Model):
     """
-    Model representing a dataset file associated with a project.
+    Model representing a dataset file associated with a user.
     """
 
-    project = models.ForeignKey(
-        Project, on_delete=models.CASCADE, related_name="datasets"
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="datasets",
+        null=True,
+        blank=True,
     )
     file = models.FileField(
         upload_to="datasets/%Y/%m/%d/", validators=[validate_file_size_and_type]
@@ -25,7 +29,7 @@ class ProjectDataset(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="cleaned_versions",
+        related_name="children",
     )
     is_cleaned = models.BooleanField(default=False)
 
@@ -62,7 +66,8 @@ class ProjectDataset(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.name} ({self.project.name})"
+        owner = self.user.username if self.user else "Unknown"
+        return f"{self.name} ({owner})"
 
     class Meta:
         ordering = ["-uploaded_at"]

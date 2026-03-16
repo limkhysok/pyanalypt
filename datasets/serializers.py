@@ -7,7 +7,7 @@ class ProjectDatasetSerializer(serializers.ModelSerializer):
         model = ProjectDataset
         fields = (
             "id",
-            "project",
+            "user",
             "file",
             "name",
             "file_format",
@@ -17,6 +17,7 @@ class ProjectDatasetSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id",
+            "user",
             "file_format",
             "row_count",
             "column_count",
