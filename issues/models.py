@@ -27,14 +27,28 @@ class Issue(models.Model):
         (TYPE_TYPE_MISMATCH, "Type Mismatch"),
     ]
 
+    # DETECTION SOURCE
+    DETECTED_BY_PANDAS = "PANDAS"
+    DETECTED_BY_GEMINI = "GEMINI"
+    DETECTED_BY_MANUAL = "MANUAL"
+    DETECTED_BY_CHOICES = [
+        (DETECTED_BY_PANDAS, "Pandas Scan"),
+        (DETECTED_BY_GEMINI, "Gemini AI Scan"),
+        (DETECTED_BY_MANUAL, "Manual"),
+    ]
+
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="issues")
     issue_type = models.CharField(max_length=50, choices=TYPE_CHOICES)
     column_name = models.CharField(max_length=255, blank=True, default="")
     row_index = models.IntegerField(null=True, blank=True)
+    affected_rows = models.IntegerField(null=True, blank=True)
     description = models.TextField()
     severity = models.CharField(max_length=10, choices=SEVERITY_CHOICES, default=SEVERITY_LOW)
     suggested_fix = models.TextField(blank=True, default="")
-    
+    detected_by = models.CharField(
+        max_length=10, choices=DETECTED_BY_CHOICES, default=DETECTED_BY_PANDAS
+    )
+    is_user_modified = models.BooleanField(default=False)
     is_resolved = models.BooleanField(default=False)
     detected_at = models.DateTimeField(auto_now_add=True)
 

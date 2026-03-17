@@ -512,66 +512,104 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
         return df
 
-    @action(detail=True, methods=["get"])
+    @action(detail=True, methods=["post"])
     def diagnose(self, request, pk=None):
         """
-        Step 2: Identifying the Issues (Hybrid AI + Pandas).
-        Creates Issue records in the database.
+        POST /datasets/{id}/diagnose/
+        Body: {"method": "pandas"} | {"method": "gemini"} | {"method": "both"} (default)
+
+        Runs detector scans safely and returns issues grouped by column.
+        Existing issues are replaced only for detectors that run successfully.
         """
         dataset = self.get_object()
-        file_path = dataset.file.path
+        method = request.data.get("method", "both").lower()
+
+        if method not in ("pandas", "gemini", "both"):
+            return Response(
+                {"detail": "Invalid method. Choose 'pandas', 'gemini', or 'both'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
-            df = self._load_dataframe(file_path, dataset.file_format)
+            df = self._load_dataframe(dataset.file.path, dataset.file_format)
             if df is None:
                 return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=400)
 
-            dataset.issues.all().delete()
+            warnings = []
+            any_scan_succeeded = False
 
-            issues_found = sum(
-                [
-                    self._check_missing_values(dataset, df),
-                    self._check_duplicates(dataset, df),
-                    self._check_type_inconsistencies(dataset, df),
-                    self._check_outliers(dataset, df),
-                    self._run_ai_diagnostic(dataset, df),
-                ]
-            )
+            if method in ("pandas", "both"):
+                # Refresh only Pandas-generated auto issues.
+                dataset.issues.filter(
+                    is_user_modified=False,
+                    detected_by=Issue.DETECTED_BY_PANDAS,
+                ).delete()
+                self._check_missing_values(dataset, df)
+                self._check_duplicates(dataset, df)
+                self._check_type_inconsistencies(dataset, df)
+                self._check_outliers(dataset, df)
+                any_scan_succeeded = True
 
-            if issues_found == 0:
+            if method in ("gemini", "both"):
+                ai_ok, ai_error = self._run_ai_diagnostic(dataset, df)
+                if ai_ok:
+                    any_scan_succeeded = True
+                elif ai_error:
+                    warnings.append(ai_error)
+
+            issues_qs = dataset.issues.all().order_by("column_name", "-detected_at")
+
+            if any_scan_succeeded and not issues_qs.exists():
                 Issue.objects.create(
                     dataset=dataset,
                     issue_type=Issue.TYPE_SEMANTIC_ERROR,
                     description="Dataset is healthy! No major issues found.",
                     severity=Issue.SEVERITY_LOW,
                     suggested_fix="Your data looks ready for analysis.",
+                    detected_by=Issue.DETECTED_BY_PANDAS,
                 )
+                issues_qs = dataset.issues.all()
 
-            return Response(
-                {
-                    "detail": "Diagnostic complete.",
-                    "issues_found": dataset.issues.count(),
-                    "dataset_id": dataset.id,
-                }
-            )
+            # Group issues by column for display
+            grouped = {}
+            for issue in issues_qs:
+                key = issue.column_name or "__dataset__"
+                grouped.setdefault(key, []).append({
+                    "id": issue.id,
+                    "issue_type": issue.issue_type,
+                    "affected_rows": issue.affected_rows,
+                    "description": issue.description,
+                    "severity": issue.severity,
+                    "suggested_fix": issue.suggested_fix,
+                    "detected_by": issue.detected_by,
+                    "is_user_modified": issue.is_user_modified,
+                    "is_resolved": issue.is_resolved,
+                })
+
+            return Response({
+                "dataset_id": dataset.id,
+                "method": method,
+                "total_issues": issues_qs.count(),
+                "issues_by_column": grouped,
+                "warnings": warnings,
+            })
 
         except Exception as e:
             return Response({"detail": f"Diagnosis failed: {str(e)}"}, status=500)
 
     def _check_missing_values(self, dataset, df):
-        count_found = 0
         for col, count in df.isnull().sum().to_dict().items():
             if count > 0:
                 Issue.objects.create(
                     dataset=dataset,
                     issue_type=Issue.TYPE_MISSING_VALUE,
                     column_name=col,
-                    description=f"Missing Values: {count} rows in '{col}'.",
+                    affected_rows=int(count),
+                    description=f"'{col}' has {count} missing value(s).",
                     severity=Issue.SEVERITY_MEDIUM,
                     suggested_fix="Use the 'handle_na' operation to fill or drop these rows.",
+                    detected_by=Issue.DETECTED_BY_PANDAS,
                 )
-                count_found += 1
-        return count_found
 
     def _check_duplicates(self, dataset, df):
         dup_count = int(df.duplicated().sum())
@@ -579,15 +617,14 @@ class DatasetViewSet(viewsets.ModelViewSet):
             Issue.objects.create(
                 dataset=dataset,
                 issue_type=Issue.TYPE_DUPLICATE,
-                description=f"Duplicate Rows: Found {dup_count} exact duplicates.",
+                affected_rows=dup_count,
+                description=f"Found {dup_count} exact duplicate row(s) across the dataset.",
                 severity=Issue.SEVERITY_LOW,
                 suggested_fix="Use the 'drop_duplicates' operation.",
+                detected_by=Issue.DETECTED_BY_PANDAS,
             )
-            return 1
-        return 0
 
     def _check_type_inconsistencies(self, dataset, df):
-        count_found = 0
         for col in df.columns:
             types = df[col].dropna().apply(type).unique()
             if len(types) > 1:
@@ -596,15 +633,13 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     dataset=dataset,
                     issue_type=Issue.TYPE_TYPE_MISMATCH,
                     column_name=col,
-                    description=f"Mixed Types: '{col}' contains {', '.join(type_names)}.",
+                    description=f"'{col}' contains mixed types: {', '.join(type_names)}.",
                     severity=Issue.SEVERITY_HIGH,
                     suggested_fix="Use the 'astype' operation to standardize this column.",
+                    detected_by=Issue.DETECTED_BY_PANDAS,
                 )
-                count_found += 1
-        return count_found
 
     def _check_outliers(self, dataset, df):
-        count_found = 0
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
             if df[col].std() > 0:
@@ -615,39 +650,50 @@ class DatasetViewSet(viewsets.ModelViewSet):
                         dataset=dataset,
                         issue_type=Issue.TYPE_OUTLIER,
                         column_name=col,
-                        description=f"Outliers: Found {ocount} values with Z-score > 3 in '{col}'.",
+                        affected_rows=ocount,
+                        description=f"'{col}' has {ocount} outlier(s) with Z-score > 3.",
                         severity=Issue.SEVERITY_LOW,
                         suggested_fix="Use 'outlier_clip' to bound these values.",
+                        detected_by=Issue.DETECTED_BY_PANDAS,
                     )
-                    count_found += 1
-        return count_found
 
     def _run_ai_diagnostic(self, dataset, df):
         if not settings.GOOGLE_AI_API_KEY:
-            return 0
+            return False, "Gemini scan skipped: GOOGLE_AI_API_KEY is not configured."
         try:
             client = genai.Client(api_key=settings.GOOGLE_AI_API_KEY)
             sample_data = df.head(10).to_csv(index=False)
             prompt = (
                 f"Analyze this dataset schema and 10-row sample for 'dirty data' or semantic errors. "
                 f"Columns: {list(df.columns)}\n\n{sample_data}\n\n"
-                "Provide a bulleted list of potential issues. Be concise."
+                "Provide a bulleted list of potential issues per column. Be concise."
             )
             response = client.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=prompt,
             )
+
+            # Replace only Gemini-generated auto issues after a successful AI call.
+            dataset.issues.filter(
+                is_user_modified=False,
+                detected_by=Issue.DETECTED_BY_GEMINI,
+            ).delete()
+
             Issue.objects.create(
                 dataset=dataset,
                 issue_type=Issue.TYPE_SEMANTIC_ERROR,
-                description="AI Semantic Insights",
+                description="Gemini AI Semantic Analysis",
                 suggested_fix=response.text,
                 severity=Issue.SEVERITY_LOW,
+                detected_by=Issue.DETECTED_BY_GEMINI,
             )
-            return 1
+            return True, None
         except Exception as e:
-            print(f"AI Diagnostic failed: {str(e)}")
-            return 0
+            err = str(e)
+            print(f"AI Diagnostic failed: {err}")
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                return False, "Gemini quota exceeded. Existing Gemini issues were kept unchanged."
+            return False, "Gemini scan failed. Existing Gemini issues were kept unchanged."
 
     @action(detail=True, methods=["post"])
     def train(self, request, pk=None):

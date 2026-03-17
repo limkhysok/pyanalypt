@@ -204,34 +204,126 @@ Retrieves a list of all datasets owned by the authenticated user.
 
 `file_size` is stored in bytes and is read-only metadata populated by the server.
 
-### 2. Identifying the Issues
-Identify "dirty" data automatically or manually.
+### 2. Run Diagnosis Scan
+Trigger a Pandas or Gemini AI scan on a dataset to detect dirty data. Results are saved as `Issue` records and returned grouped by column.
 
-- **Endpoint**: `GET /api/v1/datasets/{id}/diagnose/` - **Auto-Scan**: Runs Pandas + Google Gemini AI to find missing values, duplicates, and semantic errors. Saves results to the **Issues** table.
-- **Endpoint**: `GET /api/v1/datasets/{id}/query/` - **Analyst Search**: Manually filter the dataset to find specific issues.
-  - Query params: `?column=price&operator=lt&value=0` (operators: `eq`, `gt`, `lt`, `contains`).
-- **Endpoint**: `GET /api/v1/datasets/{id}/preview/` - Get the first 10-100 rows for general inspection.
+- **Endpoint**: `POST /api/v1/datasets/{id}/diagnose/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "method": "pandas"
+}
+```
+`method` options: `"pandas"` | `"gemini"` | `"both"` *(default: `"both"`)*
+
+- **Response (200 OK)**:
+```json
+{
+  "dataset_id": 15,
+  "method": "pandas",
+  "total_issues": 3,
+  "warnings": [],
+  "issues_by_column": {
+    "email": [
+      {
+        "id": 42,
+        "issue_type": "MISSING_VALUE",
+        "affected_rows": 12,
+        "description": "'email' has 12 missing value(s).",
+        "severity": "MEDIUM",
+        "suggested_fix": "Use the 'handle_na' operation to fill or drop these rows.",
+        "detected_by": "PANDAS",
+        "is_user_modified": false,
+        "is_resolved": false
+      }
+    ],
+    "age": [
+      {
+        "id": 43,
+        "issue_type": "OUTLIER",
+        "affected_rows": 2,
+        "description": "'age' has 2 outlier(s) with Z-score > 3.",
+        "severity": "LOW",
+        "suggested_fix": "Use 'outlier_clip' to bound these values.",
+        "detected_by": "PANDAS",
+        "is_user_modified": false,
+        "is_resolved": false
+      }
+    ],
+    "__dataset__": [
+      {
+        "id": 44,
+        "issue_type": "DUPLICATE",
+        "affected_rows": 5,
+        "description": "Found 5 exact duplicate row(s) across the dataset.",
+        "severity": "LOW",
+        "suggested_fix": "Use the 'drop_duplicates' operation.",
+        "detected_by": "PANDAS",
+        "is_user_modified": false,
+        "is_resolved": false
+      }
+    ]
+  }
+}
+```
+> Re-scanning preserves any issue the user has manually modified (`is_user_modified: true`).
+> If Gemini quota is exceeded, the response still returns `200` with a message in `warnings`, and previous Gemini issues remain unchanged.
+
+### 3. Other Dataset Utilities
+
+- **Endpoint**: `GET /api/v1/datasets/{id}/query/` — **Analyst Search**: Manually filter the dataset.
+  - Query params: `?column=price&operator=lt&value=0` *(operators: `eq`, `gt`, `lt`, `contains`)*
+- **Endpoint**: `GET /api/v1/datasets/{id}/preview/` — Get the first 10–100 rows for inspection.
+  - Query params: `?rows=50` *(default: 10, max: 1000)*
 
 ---
 
 ## ⚠️ Issue Management
-Manage the "Dirty Data" found during diagnosis.
+View and manage dirty-data issues detected during diagnosis.
 
-### a. List Issues
-Get all detected problems for your datasets.
+### Issue Object Schema
 
-- **Endpoint**: `GET /api/v1/issues/`
-- **Response**: List of `Issue` objects.
+| Field | Type | Description |
+|---|---|---|
+| `id` | int | Unique identifier |
+| `dataset` | int | FK to the parent Dataset |
+| `issue_type` | string | `MISSING_VALUE` \| `DUPLICATE` \| `OUTLIER` \| `TYPE_MISMATCH` \| `SEMANTIC_ERROR` |
+| `column_name` | string | Column where the issue was detected (empty = dataset-level) |
+| `row_index` | int\|null | Specific row index (cell-level issues only) |
+| `affected_rows` | int\|null | Number of rows affected (column-level issues) |
+| `description` | string | Human-readable explanation |
+| `severity` | string | `LOW` \| `MEDIUM` \| `HIGH` |
+| `suggested_fix` | string | Recommended action |
+| `detected_by` | string | `PANDAS` \| `GEMINI` \| `MANUAL` |
+| `is_user_modified` | bool | `true` if user has manually edited this issue |
+| `is_resolved` | bool | `true` if the issue has been fixed |
+| `detected_at` | datetime | Timestamp of detection |
 
-### b. Update/Resolve Issue
-Mark an issue as fixed or change its severity.
+### a. List Issues for a Dataset
+Get all issues for a specific dataset, scoped to the authenticated user.
+
+- **Endpoint**: `GET /api/v1/issues/?dataset={id}`
+- **Auth Required**: Yes
+- **Response**: Array of Issue objects.
+
+### b. Update / Override an Issue
+User can edit any field (e.g. severity, suggested_fix, description) or resolve it.
+Any PATCH automatically sets `is_user_modified: true` to protect it from being overwritten on re-scan.
 
 - **Endpoint**: `PATCH /api/v1/issues/{id}/`
-- **Body**: `{"is_resolved": true}`
+- **Auth Required**: Yes
+- **Request Body** *(any subset of writable fields)*:
+```json
+{
+  "severity": "HIGH",
+  "suggested_fix": "Drop these rows manually.",
+  "is_resolved": true
+}
+```
+- **Response (200 OK)**: Updated Issue object with `"is_user_modified": true`.
 
 ---
-
-## 🔑 JWT Token Management
 
 ### Standard Error Format
 ```json
@@ -257,5 +349,5 @@ Mark an issue as fixed or change its severity.
 ## 🔗 Resources
 
 - **GitHub Repository**: [soklimkhy/pyanalypt](https://github.com/soklimkhy/pyanalypt)
-- **Last Updated**: 2026-03-16
+- **Last Updated**: 2026-03-17
 - **Status**: 🛠️ Refactoring for "Big Change"
