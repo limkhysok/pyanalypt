@@ -5,7 +5,7 @@ from django.conf import settings
 from .validators import validate_file_size_and_type
 
 
-class ProjectDataset(models.Model):
+class Dataset(models.Model):
     """
     Model representing a dataset file associated with a user.
     """
@@ -20,7 +20,7 @@ class ProjectDataset(models.Model):
     file = models.FileField(
         upload_to="datasets/%Y/%m/%d/", validators=[validate_file_size_and_type]
     )
-    name = models.CharField(max_length=255, blank=True)
+    file_name = models.CharField(max_length=255, blank=True)
     file_format = models.CharField(max_length=10, blank=True)
     row_count = models.IntegerField(null=True, blank=True)
     column_count = models.IntegerField(null=True, blank=True)
@@ -33,12 +33,13 @@ class ProjectDataset(models.Model):
     )
     is_cleaned = models.BooleanField(default=False)
 
-    uploaded_at = models.DateTimeField(auto_now_add=True)
+    uploaded_date = models.DateTimeField(auto_now_add=True)
+    updated_date = models.DateTimeField(auto_now=True)
 
     def save(self, *args, **kwargs):
         # 1. Set basic metadata
-        if not self.name:
-            self.name = self.file.name
+        if not self.file_name:
+            self.file_name = self.file.name
         if not self.file_format:
             self.file_format = os.path.splitext(self.file.name)[1][1:].lower()
 
@@ -67,9 +68,9 @@ class ProjectDataset(models.Model):
 
     def __str__(self):
         owner = self.user.username if self.user else "Unknown"
-        return f"{self.name} ({owner})"
+        return f"{self.file_name} ({owner})"
 
     class Meta:
-        ordering = ["-uploaded_at"]
+        ordering = ["-uploaded_date"]
         verbose_name = "Dataset"
         verbose_name_plural = "Datasets"

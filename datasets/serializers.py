@@ -1,19 +1,20 @@
 from rest_framework import serializers
-from .models import ProjectDataset
+from .models import Dataset
 
 
-class ProjectDatasetSerializer(serializers.ModelSerializer):
+class DatasetSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ProjectDataset
+        model = Dataset
         fields = (
             "id",
             "user",
             "file",
-            "name",
+            "file_name",
             "file_format",
             "row_count",
             "column_count",
-            "uploaded_at",
+            "uploaded_date",
+            "updated_date",
         )
         read_only_fields = (
             "id",
@@ -21,5 +22,6 @@ class ProjectDatasetSerializer(serializers.ModelSerializer):
             "file_format",
             "row_count",
             "column_count",
-            "uploaded_at",
+            "uploaded_date",
+            "updated_date",
         )

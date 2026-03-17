@@ -7,8 +7,8 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.core.files.base import ContentFile
 from django.http import HttpResponse
-from .models import ProjectDataset
-from .serializers import ProjectDatasetSerializer
+from .models import Dataset
+from .serializers import DatasetSerializer
 from sklearn.cluster import KMeans
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import silhouette_score, mean_squared_error, r2_score
@@ -23,7 +23,7 @@ class CreateDatasetView(generics.CreateAPIView):
     Expects multipart/form-data.
     """
 
-    serializer_class = ProjectDatasetSerializer
+    serializer_class = DatasetSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
@@ -35,7 +35,7 @@ class PasteDatasetView(generics.GenericAPIView):
     Handle raw text paste (CSV or JSON string).
     """
 
-    serializer_class = ProjectDatasetSerializer
+    serializer_class = DatasetSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
@@ -59,7 +59,7 @@ class PasteDatasetView(generics.GenericAPIView):
         serializer = self.get_serializer(
             data={
                 "file": content_file,
-                "name": file_name,
+                "file_name": file_name,
             }
         )
         serializer.is_valid(raise_exception=True)
@@ -68,17 +68,17 @@ class PasteDatasetView(generics.GenericAPIView):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
-class ProjectDatasetViewSet(viewsets.ModelViewSet):
+class DatasetViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing individual datasets (Read, Update, Delete).
     Includes a 'preview' action and 'clean' action for transformations.
     """
 
-    serializer_class = ProjectDatasetSerializer
+    serializer_class = DatasetSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return ProjectDataset.objects.filter(user=self.request.user)
+        return Dataset.objects.filter(user=self.request.user)
 
     def _get_preview_response(self, dataset, df, row_limit=10):
         """Helper to generate preview structure from a dataframe."""
@@ -103,7 +103,7 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
             "summary": summary,
             "total_rows_hint": len(df),
             "dataset_id": dataset.id,
-            "name": dataset.name,
+            "file_name": dataset.file_name,
         }
 
     @action(detail=True, methods=["get"])
@@ -163,14 +163,14 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
             df = self._apply_cleaning_operations(df, pipeline)
 
             # Save cleaned version
-            new_name = self._generate_cleaned_name(dataset.name)
+            new_file_name = self._generate_cleaned_name(dataset.file_name)
             buf = self._save_dataframe_to_buffer(df, dataset.file_format)
-            content_file = ContentFile(buf.read(), name=new_name)
+            content_file = ContentFile(buf.read(), name=new_file_name)
 
-            new_dataset = ProjectDataset.objects.create(
+            new_dataset = Dataset.objects.create(
                 user=dataset.user,
                 file=content_file,
-                name=new_name,
+                file_name=new_file_name,
                 parent=dataset,
                 is_cleaned=True,
                 row_count=len(df),
@@ -310,8 +310,8 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
                 df[c] = df[c].round(decimals)
         return df
 
-    def _generate_cleaned_name(self, original_name):
-        return original_name if original_name.startswith("cleaned_") else f"cleaned_{original_name}"
+    def _generate_cleaned_name(self, original_file_name):
+        return original_file_name if original_file_name.startswith("cleaned_") else f"cleaned_{original_file_name}"
 
     def _save_dataframe_to_buffer(self, df, file_format):
         buf = io.BytesIO()
@@ -439,14 +439,14 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
         else:
             score = 0.0
 
-        new_name = f"clustered_{dataset.name}"
+        new_file_name = f"clustered_{dataset.file_name}"
         buf = self._save_dataframe_to_buffer(df, dataset.file_format)
-        content_file = ContentFile(buf.read(), name=new_name)
+        content_file = ContentFile(buf.read(), name=new_file_name)
 
-        new_dataset = ProjectDataset.objects.create(
+        new_dataset = Dataset.objects.create(
             user=dataset.user,
             file=content_file,
-            name=new_name,
+            file_name=new_file_name,
             parent=dataset,
             is_cleaned=True,
             row_count=len(df),
@@ -564,13 +564,13 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
             response = HttpResponse()
             if export_format == "csv":
                 response["Content-Disposition"] = (
-                    f'attachment; filename="{dataset.name.split(".")[0]}.csv"'
+                    f'attachment; filename="{dataset.file_name.split(".")[0]}.csv"'
                 )
                 response["Content-Type"] = "text/csv"
                 df.to_csv(response, index=False)
             elif export_format in ["xlsx", "excel"]:
                 response["Content-Disposition"] = (
-                    f'attachment; filename="{dataset.name.split(".")[0]}.xlsx"'
+                    f'attachment; filename="{dataset.file_name.split(".")[0]}.xlsx"'
                 )
                 response["Content-Type"] = (
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -578,7 +578,7 @@ class ProjectDatasetViewSet(viewsets.ModelViewSet):
                 df.to_excel(response, index=False)
             elif export_format == "json":
                 response["Content-Disposition"] = (
-                    f'attachment; filename="{dataset.name.split(".")[0]}.json"'
+                    f'attachment; filename="{dataset.file_name.split(".")[0]}.json"'
                 )
                 response["Content-Type"] = "application/json"
                 df.to_json(response, orient="records")

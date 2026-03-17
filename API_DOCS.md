@@ -147,6 +147,75 @@ PyAnalypt provides a full administrative interface for managing users and system
 
 ---
 
+## 📂 Dataset Management (The Data Engine)
+
+All endpoints below follow the **api/v1/datasets/** prefix.
+
+### 1. Upload File (Multipart)
+Standard multipart/form-data upload using your system's file picker.
+
+- **Endpoint**: `POST /datasets/upload/`
+- **Request (Form Data)**:
+  - `file`: The `.csv`, `.xlsx`, or `.json` file.
+- **Response**: The newly created `Dataset` object.
+
+### 2. Paste Data (Raw Text)
+Create a dataset by pasting raw CSV/JSON text directly from your clipboard.
+
+- **Endpoint**: `POST /datasets/paste/`
+- **Request Body**:
+```json
+{
+  "file_name": "survey_results.csv",
+  "raw_data": "id,name,value\n1,test,100",
+  "format": "csv"
+}
+```
+
+### 3. List All Datasets
+Retrieves a list of all datasets owned by the authenticated user.
+
+- **Endpoint**: `GET /datasets/`
+- **Response Format**:
+```json
+[
+  {
+    "id": 15,
+    "user": 1,
+    "file": "http://.../datasets/survey.csv",
+    "file_name": "survey.csv",
+    "file_format": "csv",
+    "row_count": 1250,
+    "column_count": 14,
+    "uploaded_date": "2026-03-17T10:00:00Z",
+    "updated_date": "2026-03-17T10:30:00Z"
+  }
+]
+```
+
+### 4. Smart Cleaning Actions
+Apply cleaning operations. Each operation creates a **new version** (a child dataset).
+
+- **Endpoint**: `POST /datasets/{id}/clean/`
+- **Request Body (Pipeline Example)**:
+```json
+{
+  "pipeline": [
+    { "operation": "handle_na", "params": { "strategy": "fill_mean" } },
+    { "operation": "drop_duplicates", "params": { "columns": ["email"] } }
+  ]
+}
+```
+
+### 5. Smart Analysis & Visuals
+Get stats and chart-ready data for the frontend.
+
+- **Endpoint**: `GET /datasets/{id}/analyze/` - Get correlations and missing value reports.
+- **Endpoint**: `POST /datasets/{id}/visualize/` - Generate ECharts data for scatter/bar/line/pie.
+- **Endpoint**: `GET /datasets/{id}/preview/` - Get the first 10-100 rows for the table view.
+
+---
+
 ## 🚨 Error Responses
 
 ### Standard Error Format
