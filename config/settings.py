@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     # Local apps
     "core",
     "datasets",
+    "issues",
 ]
 
 MIDDLEWARE = [
@@ -237,6 +238,9 @@ else:
     EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
     EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 
+# --- Google AI Studio Configuration ---
+GOOGLE_AI_API_KEY = env("GOOGLE_AI_STUDIO_API_KEY", default=None)
+
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@pyanalypt.com")
 
 
@@ -261,15 +265,18 @@ AUTH_USER_MODEL = "core.AuthUser"
 SITE_ID = 1
 
 # ===== ALLAUTH ACCOUNT SETTINGS =====
-# Signup/Login Configuration
-ACCOUNT_LOGIN_METHODS = {"username", "email"}
-# Default signup fields (username/password) are used.
+# Modern configuration for allauth v0.60+
 ACCOUNT_UNIQUE_EMAIL = True
-ACCOUNT_USER_MODEL_USERNAME_FIELD = "username"
-
-# Email Verification
-ACCOUNT_EMAIL_VERIFICATION = "optional"  # 'mandatory', 'optional', or 'none'
+ACCOUNT_USER_MODEL_USERNAME_FIELD = None
+ACCOUNT_EMAIL_VERIFICATION = "optional"
 ACCOUNT_EMAIL_CONFIRMATION_EXPIRE_DAYS = 3
+
+# Login methods: email + password only
+ACCOUNT_LOGIN_METHODS = {"email"}
+
+# Signup fields for allauth v65+: email/password only.
+# Username is generated automatically in CustomAccountAdapter.
+ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*", "password2*", "first_name", "last_name"]
 
 # Login/Logout
 ACCOUNT_LOGIN_ON_EMAIL_CONFIRMATION = True
@@ -329,5 +336,8 @@ SOCIALACCOUNT_PROVIDERS = {
 }
 
 # ===== CUSTOM ADAPTER FOR GOOGLE OAUTH DATA =====
+# This will be used for regular (email/password) signup behavior
+ACCOUNT_ADAPTER = "core.adapters.CustomAccountAdapter"
+
 # This will be used to populate AuthUser fields from Google metadata
 SOCIALACCOUNT_ADAPTER = "core.adapters.CustomSocialAccountAdapter"

@@ -133,7 +133,22 @@ class CustomAccountAdapter(DefaultAccountAdapter):
         if user.email:
             user.email = user.email.lower()
 
+        # Keep username internal: generate from email when not provided.
+        if not user.username and user.email:
+            user.username = self._generate_unique_username(user.email)
+
         if commit:
             user.save()
 
         return user
+
+    def _generate_unique_username(self, email):
+        from core.models import AuthUser
+
+        email_prefix = email.split("@")[0]
+        username = email_prefix
+        counter = 1
+        while AuthUser.objects.filter(username=username).exists():
+            username = f"{email_prefix}{counter}"
+            counter += 1
+        return username

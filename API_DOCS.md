@@ -159,7 +159,7 @@ Standard multipart/form-data upload using your system's file picker.
   - `file`: The `.csv`, `.xlsx`, or `.json` file.
 - **Response**: The newly created `Dataset` object.
 
-### 2. Paste Data (Raw Text)
+### a. Paste Data (Raw Text)
 Create a dataset by pasting raw CSV/JSON text directly from your clipboard.
 
 - **Endpoint**: `POST /datasets/paste/`
@@ -172,7 +172,16 @@ Create a dataset by pasting raw CSV/JSON text directly from your clipboard.
 }
 ```
 
-### 3. List All Datasets
+### b. Dataset Actions (CRUD)
+
+- **Endpoint**: `GET /datasets/` - List all datasets for the logged-in user.
+- **Endpoint**: `GET /datasets/{id}/` - **Detail View**. Returns model fields **plus** a `data_preview` for immediate table display.
+- **Endpoint**: `PATCH /datasets/{id}/` - **Update Metadata**. Example: `{"file_name": "renamed.csv"}`.
+- **Endpoint**: `PATCH /datasets/{id}/update_cell/` - **Manual Edit**. Modify a specific cell in the file.
+  - Body: `{"row_index": 5, "column_name": "Age", "value": 25}`.
+- **Endpoint**: `DELETE /datasets/{id}/` - **Delete**. Removes the dataset and its associated file.
+
+### c. List All Datasets
 Retrieves a list of all datasets owned by the authenticated user.
 
 - **Endpoint**: `GET /datasets/`
@@ -185,38 +194,44 @@ Retrieves a list of all datasets owned by the authenticated user.
     "file": "http://.../datasets/survey.csv",
     "file_name": "survey.csv",
     "file_format": "csv",
-    "row_count": 1250,
-    "column_count": 14,
+    "file_size": 1048576,
     "uploaded_date": "2026-03-17T10:00:00Z",
     "updated_date": "2026-03-17T10:30:00Z"
   }
 ]
+
 ```
 
-### 4. Smart Cleaning Actions
-Apply cleaning operations. Each operation creates a **new version** (a child dataset).
+`file_size` is stored in bytes and is read-only metadata populated by the server.
 
-- **Endpoint**: `POST /datasets/{id}/clean/`
-- **Request Body (Pipeline Example)**:
-```json
-{
-  "pipeline": [
-    { "operation": "handle_na", "params": { "strategy": "fill_mean" } },
-    { "operation": "drop_duplicates", "params": { "columns": ["email"] } }
-  ]
-}
-```
+### 2. Identifying the Issues
+Identify "dirty" data automatically or manually.
 
-### 5. Smart Analysis & Visuals
-Get stats and chart-ready data for the frontend.
-
-- **Endpoint**: `GET /datasets/{id}/analyze/` - Get correlations and missing value reports.
-- **Endpoint**: `POST /datasets/{id}/visualize/` - Generate ECharts data for scatter/bar/line/pie.
-- **Endpoint**: `GET /datasets/{id}/preview/` - Get the first 10-100 rows for the table view.
+- **Endpoint**: `GET /api/v1/datasets/{id}/diagnose/` - **Auto-Scan**: Runs Pandas + Google Gemini AI to find missing values, duplicates, and semantic errors. Saves results to the **Issues** table.
+- **Endpoint**: `GET /api/v1/datasets/{id}/query/` - **Analyst Search**: Manually filter the dataset to find specific issues.
+  - Query params: `?column=price&operator=lt&value=0` (operators: `eq`, `gt`, `lt`, `contains`).
+- **Endpoint**: `GET /api/v1/datasets/{id}/preview/` - Get the first 10-100 rows for general inspection.
 
 ---
 
-## 🚨 Error Responses
+## ⚠️ Issue Management
+Manage the "Dirty Data" found during diagnosis.
+
+### a. List Issues
+Get all detected problems for your datasets.
+
+- **Endpoint**: `GET /api/v1/issues/`
+- **Response**: List of `Issue` objects.
+
+### b. Update/Resolve Issue
+Mark an issue as fixed or change its severity.
+
+- **Endpoint**: `PATCH /api/v1/issues/{id}/`
+- **Body**: `{"is_resolved": true}`
+
+---
+
+## 🔑 JWT Token Management
 
 ### Standard Error Format
 ```json

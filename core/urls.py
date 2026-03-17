@@ -41,4 +41,6 @@ urlpatterns = [
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token-verify"),
     # Dataset Management
     path("datasets/", include("datasets.urls")),
+    # Issue Management
+    path("issues/", include("issues.urls")),
 ]

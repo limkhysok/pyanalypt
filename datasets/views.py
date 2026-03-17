@@ -9,9 +9,13 @@ from django.core.files.base import ContentFile
 from django.http import HttpResponse
 from .models import Dataset
 from .serializers import DatasetSerializer
+from issues.models import Issue
 from sklearn.cluster import KMeans
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import silhouette_score, mean_squared_error, r2_score
+import json
+from google import genai
+from django.conf import settings
 
 # Error Messages
 ERR_UNSUPPORTED_FORMAT = "Unsupported format."
@@ -59,7 +63,6 @@ class PasteDatasetView(generics.GenericAPIView):
         serializer = self.get_serializer(
             data={
                 "file": content_file,
-                "file_name": file_name,
             }
         )
         serializer.is_valid(raise_exception=True)
@@ -89,13 +92,17 @@ class DatasetViewSet(viewsets.ModelViewSet):
         # Numeric summary
         numeric_cols = df.select_dtypes(include=["number"]).columns
         if not numeric_cols.empty:
-            summary = df[numeric_cols].describe().to_dict()
+            # describe().to_json ensures numpy types are handled
+            summary_json = df[numeric_cols].describe().to_json()
+            summary = json.loads(summary_json)
+
+        # rows to_json handles NaNs (converts to null) and numpy types
+        rows_json = preview_df.to_json(orient="records", date_format="iso")
+        rows = json.loads(rows_json)
 
         return {
             "columns": list(df.columns),
-            "rows": preview_df.where(pd.notnull(preview_df), None).to_dict(
-                orient="records"
-            ),
+            "rows": rows,
             "metadata": {
                 "dtypes": dtypes,
                 "shape": [len(df), len(df.columns)],
@@ -140,6 +147,60 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+    def retrieve(self, request, *args, **kwargs):
+        """Include preview data in detail view if requested."""
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        data = serializer.data
+
+        # Load first 100 rows by default for detail view
+        try:
+            df = self._load_dataframe(instance.file.path, instance.file_format)
+            if df is not None:
+                data["data_preview"] = self._get_preview_response(
+                    instance, df, row_limit=50
+                )
+        except Exception:
+            data["data_preview"] = None
+
+        return Response(data)
+
+    @action(detail=True, methods=["patch"])
+    def update_cell(self, request, pk=None):
+        """Manual edit: change a single value in the dataset."""
+        dataset = self.get_object()
+        row_idx = request.data.get("row_index")
+        col_name = request.data.get("column_name")
+        new_val = request.data.get("value")
+
+        if row_idx is None or not col_name:
+            return Response(
+                {"detail": "row_index and column_name required."}, status=400
+            )
+
+        try:
+            df = self._load_dataframe(dataset.file.path, dataset.file_format)
+            if df is None:
+                return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=400)
+
+            if col_name not in df.columns:
+                return Response(
+                    {"detail": f"Column '{col_name}' not found."}, status=400
+                )
+
+            # Simple manual update
+            df.at[int(row_idx), col_name] = new_val
+
+            # Save back to file
+            buf = self._save_dataframe_to_buffer(df, dataset.file_format)
+            dataset.file.save(dataset.file.name, ContentFile(buf.read()), save=False)
+            dataset.save()
+
+            return Response(self._get_preview_response(dataset, df))
+
+        except Exception as e:
+            return Response({"detail": f"Failed to update cell: {str(e)}"}, status=500)
+
     @action(detail=True, methods=["post"])
     def clean(self, request, pk=None):
         """
@@ -173,8 +234,6 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 file_name=new_file_name,
                 parent=dataset,
                 is_cleaned=True,
-                row_count=len(df),
-                column_count=len(df.columns),
                 file_format=dataset.file_format,
             )
 
@@ -289,14 +348,21 @@ class DatasetViewSet(viewsets.ModelViewSet):
         return df
 
     def _op_replace_value(self, df, params):
-        col, old_v, new_v = params.get("column"), params.get("old_value"), params.get("new_value")
+        col, old_v, new_v = (
+            params.get("column"),
+            params.get("old_value"),
+            params.get("new_value"),
+        )
         if col in df.columns:
             df[col] = df[col].replace(old_v, new_v)
         return df
 
     def _op_outlier_clip(self, df, params):
         cols = params.get("columns", [])
-        low, high = params.get("lower_quantile", 0.05), params.get("upper_quantile", 0.95)
+        low, high = (
+            params.get("lower_quantile", 0.05),
+            params.get("upper_quantile", 0.95),
+        )
         for c in cols:
             if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
                 q_low, q_high = df[c].quantile(low), df[c].quantile(high)
@@ -311,7 +377,11 @@ class DatasetViewSet(viewsets.ModelViewSet):
         return df
 
     def _generate_cleaned_name(self, original_file_name):
-        return original_file_name if original_file_name.startswith("cleaned_") else f"cleaned_{original_file_name}"
+        return (
+            original_file_name
+            if original_file_name.startswith("cleaned_")
+            else f"cleaned_{original_file_name}"
+        )
 
     def _save_dataframe_to_buffer(self, df, file_format):
         buf = io.BytesIO()
@@ -391,6 +461,194 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+    @action(detail=True, methods=["get"])
+    def query(self, request, pk=None):
+        """
+        Analyst manual identification of issues by filtering.
+        Example: ?column=price&operator=lt&value=0
+        """
+        dataset = self.get_object()
+        file_path = dataset.file.path
+
+        col = request.query_params.get("column")
+        op = request.query_params.get("operator", "eq")
+        val = request.query_params.get("value")
+
+        try:
+            df = self._load_dataframe(file_path, dataset.file_format)
+            if df is None:
+                return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=400)
+
+            if col and val:
+                df = self._apply_query_filter(df, col, op, val)
+
+            return Response(self._get_preview_response(dataset, df))
+        except ValueError as ve:
+            return Response({"detail": str(ve)}, status=400)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=500)
+
+    def _apply_query_filter(self, df, col, op, val):
+        if col not in df.columns:
+            raise ValueError(f"Column '{col}' not found.")
+
+        try:
+            # Handle numeric conversion if needed
+            if pd.api.types.is_numeric_dtype(df[col]):
+                query_val = float(val)
+            else:
+                query_val = val
+
+            if op == "eq":
+                return df[df[col] == query_val]
+            elif op == "gt":
+                return df[df[col] > query_val]
+            elif op == "lt":
+                return df[df[col] < query_val]
+            elif op == "contains":
+                return df[df[col].astype(str).str.contains(val, case=False)]
+        except (ValueError, TypeError):
+            raise ValueError("Invalid filter values for the selected column type.")
+
+        return df
+
+    @action(detail=True, methods=["get"])
+    def diagnose(self, request, pk=None):
+        """
+        Step 2: Identifying the Issues (Hybrid AI + Pandas).
+        Creates Issue records in the database.
+        """
+        dataset = self.get_object()
+        file_path = dataset.file.path
+
+        try:
+            df = self._load_dataframe(file_path, dataset.file_format)
+            if df is None:
+                return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=400)
+
+            dataset.issues.all().delete()
+
+            issues_found = sum(
+                [
+                    self._check_missing_values(dataset, df),
+                    self._check_duplicates(dataset, df),
+                    self._check_type_inconsistencies(dataset, df),
+                    self._check_outliers(dataset, df),
+                    self._run_ai_diagnostic(dataset, df),
+                ]
+            )
+
+            if issues_found == 0:
+                Issue.objects.create(
+                    dataset=dataset,
+                    issue_type=Issue.TYPE_SEMANTIC_ERROR,
+                    description="Dataset is healthy! No major issues found.",
+                    severity=Issue.SEVERITY_LOW,
+                    suggested_fix="Your data looks ready for analysis.",
+                )
+
+            return Response(
+                {
+                    "detail": "Diagnostic complete.",
+                    "issues_found": dataset.issues.count(),
+                    "dataset_id": dataset.id,
+                }
+            )
+
+        except Exception as e:
+            return Response({"detail": f"Diagnosis failed: {str(e)}"}, status=500)
+
+    def _check_missing_values(self, dataset, df):
+        count_found = 0
+        for col, count in df.isnull().sum().to_dict().items():
+            if count > 0:
+                Issue.objects.create(
+                    dataset=dataset,
+                    issue_type=Issue.TYPE_MISSING_VALUE,
+                    column_name=col,
+                    description=f"Missing Values: {count} rows in '{col}'.",
+                    severity=Issue.SEVERITY_MEDIUM,
+                    suggested_fix="Use the 'handle_na' operation to fill or drop these rows.",
+                )
+                count_found += 1
+        return count_found
+
+    def _check_duplicates(self, dataset, df):
+        dup_count = int(df.duplicated().sum())
+        if dup_count > 0:
+            Issue.objects.create(
+                dataset=dataset,
+                issue_type=Issue.TYPE_DUPLICATE,
+                description=f"Duplicate Rows: Found {dup_count} exact duplicates.",
+                severity=Issue.SEVERITY_LOW,
+                suggested_fix="Use the 'drop_duplicates' operation.",
+            )
+            return 1
+        return 0
+
+    def _check_type_inconsistencies(self, dataset, df):
+        count_found = 0
+        for col in df.columns:
+            types = df[col].dropna().apply(type).unique()
+            if len(types) > 1:
+                type_names = [t.__name__ for t in types]
+                Issue.objects.create(
+                    dataset=dataset,
+                    issue_type=Issue.TYPE_TYPE_MISMATCH,
+                    column_name=col,
+                    description=f"Mixed Types: '{col}' contains {', '.join(type_names)}.",
+                    severity=Issue.SEVERITY_HIGH,
+                    suggested_fix="Use the 'astype' operation to standardize this column.",
+                )
+                count_found += 1
+        return count_found
+
+    def _check_outliers(self, dataset, df):
+        count_found = 0
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if df[col].std() > 0:
+                z_scores = np.abs((df[col] - df[col].mean()) / df[col].std())
+                ocount = int((z_scores > 3).sum())
+                if ocount > 0:
+                    Issue.objects.create(
+                        dataset=dataset,
+                        issue_type=Issue.TYPE_OUTLIER,
+                        column_name=col,
+                        description=f"Outliers: Found {ocount} values with Z-score > 3 in '{col}'.",
+                        severity=Issue.SEVERITY_LOW,
+                        suggested_fix="Use 'outlier_clip' to bound these values.",
+                    )
+                    count_found += 1
+        return count_found
+
+    def _run_ai_diagnostic(self, dataset, df):
+        if not settings.GOOGLE_AI_API_KEY:
+            return 0
+        try:
+            client = genai.Client(api_key=settings.GOOGLE_AI_API_KEY)
+            sample_data = df.head(10).to_csv(index=False)
+            prompt = (
+                f"Analyze this dataset schema and 10-row sample for 'dirty data' or semantic errors. "
+                f"Columns: {list(df.columns)}\n\n{sample_data}\n\n"
+                "Provide a bulleted list of potential issues. Be concise."
+            )
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+            )
+            Issue.objects.create(
+                dataset=dataset,
+                issue_type=Issue.TYPE_SEMANTIC_ERROR,
+                description="AI Semantic Insights",
+                suggested_fix=response.text,
+                severity=Issue.SEVERITY_LOW,
+            )
+            return 1
+        except Exception as e:
+            print(f"AI Diagnostic failed: {str(e)}")
+            return 0
+
     @action(detail=True, methods=["post"])
     def train(self, request, pk=None):
         """
@@ -403,30 +661,49 @@ class DatasetViewSet(viewsets.ModelViewSet):
         features, target = request.data.get("features", []), request.data.get("target")
 
         if not features:
-            return Response({"detail": "Features required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Features required."}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             df = self._load_dataframe(file_path, dataset.file_format)
             if df is None:
-                return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": ERR_UNSUPPORTED_FORMAT},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             df = df.dropna(subset=features + ([target] if target else []))
             if df.empty:
-                return Response({"detail": "Empty dataset after dropping NAs."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": "Empty dataset after dropping NAs."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             if not all(pd.api.types.is_numeric_dtype(df[col]) for col in features):
-                return Response({"detail": "Features must be numeric."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": "Features must be numeric."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             X = df[features]
             if model_type == "kmeans":
-                return self._train_kmeans(dataset, df, X, request.data.get("params", {}))
+                return self._train_kmeans(
+                    dataset, df, X, request.data.get("params", {})
+                )
             if model_type == "linear_regression":
                 return self._train_linear_regression(df, X, target)
 
-            return Response({"detail": f"Model '{model_type}' not supported."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": f"Model '{model_type}' not supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         except Exception as e:
-            return Response({"detail": f"Training failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"detail": f"Training failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
     def _train_kmeans(self, dataset, df, X, params):
         n_clusters = int(params.get("n_clusters", 3))
@@ -449,19 +726,26 @@ class DatasetViewSet(viewsets.ModelViewSet):
             file_name=new_file_name,
             parent=dataset,
             is_cleaned=True,
-            row_count=len(df),
-            column_count=len(df.columns),
             file_format=dataset.file_format,
         )
 
-        return Response({
-            "evaluation": {"silhouette_score": round(score, 4), "model": "KMeans", "n_clusters": n_clusters},
-            "new_dataset": self._get_preview_response(new_dataset, df)
-        })
+        return Response(
+            {
+                "evaluation": {
+                    "silhouette_score": round(score, 4),
+                    "model": "KMeans",
+                    "n_clusters": n_clusters,
+                },
+                "new_dataset": self._get_preview_response(new_dataset, df),
+            }
+        )
 
     def _train_linear_regression(self, df, X, target):
         if not target or not pd.api.types.is_numeric_dtype(df[target]):
-            return Response({"detail": "Numeric target required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Numeric target required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         y = df[target]
         model = LinearRegression()
@@ -471,15 +755,17 @@ class DatasetViewSet(viewsets.ModelViewSet):
         mse, r2 = mean_squared_error(y, predictions), r2_score(y, predictions)
         coeffs = dict(zip(X.columns, model.coef_))
 
-        return Response({
-            "evaluation": {
-                "model": "Linear Regression",
-                "mean_squared_error": round(mse, 4),
-                "r2_score": round(r2, 4),
-                "coefficients": {k: round(v, 4) for k, v in coeffs.items()},
-                "intercept": round(model.intercept_, 4),
+        return Response(
+            {
+                "evaluation": {
+                    "model": "Linear Regression",
+                    "mean_squared_error": round(mse, 4),
+                    "r2_score": round(r2, 4),
+                    "coefficients": {k: round(v, 4) for k, v in coeffs.items()},
+                    "intercept": round(model.intercept_, 4),
+                }
             }
-        })
+        )
 
     @action(detail=True, methods=["post"])
     def visualize(self, request, pk=None):
@@ -491,22 +777,37 @@ class DatasetViewSet(viewsets.ModelViewSet):
         file_path = dataset.file.path
 
         chart_type = request.data.get("chart_type", "scatter")
-        x_axis, y_axis, category_col = request.data.get("x_axis"), request.data.get("y_axis"), request.data.get("category_col")
+        x_axis, y_axis, category_col = (
+            request.data.get("x_axis"),
+            request.data.get("y_axis"),
+            request.data.get("category_col"),
+        )
 
         try:
             df = self._load_dataframe(file_path, dataset.file_format)
             if df is None:
-                return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": ERR_UNSUPPORTED_FORMAT},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             required_cols = [c for c in [x_axis, y_axis, category_col] if c]
             if not required_cols:
-                return Response({"detail": "At least one axis or category column is required."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": "At least one axis or category column is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             df = df.dropna(subset=required_cols)
-            return Response(self._build_chart_data(df, chart_type, x_axis, y_axis, category_col))
+            return Response(
+                self._build_chart_data(df, chart_type, x_axis, y_axis, category_col)
+            )
 
         except Exception as e:
-            return Response({"detail": f"Visualization generation failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"detail": f"Visualization generation failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
     def _build_chart_data(self, df, chart_type, x_axis, y_axis, category_col):
         if chart_type in ["scatter", "line"]:
@@ -523,21 +824,37 @@ class DatasetViewSet(viewsets.ModelViewSet):
         if category_col:
             series = []
             for name, group in df.groupby(category_col):
-                series.append({"name": str(name), "data": group[[x_axis, y_axis]].values.tolist()})
+                series.append(
+                    {"name": str(name), "data": group[[x_axis, y_axis]].values.tolist()}
+                )
             return {"series": series}
-        return {"series": [{"name": "Data", "data": df[[x_axis, y_axis]].values.tolist()}]}
+        return {
+            "series": [{"name": "Data", "data": df[[x_axis, y_axis]].values.tolist()}]
+        }
 
     def _build_bar(self, df, x_axis, y_axis):
         if not x_axis or not y_axis:
             raise ValueError("x_axis and y_axis are required")
         grouped = df.groupby(x_axis)[y_axis].sum().reset_index()
-        return {"xAxis": grouped[x_axis].tolist(), "series": [{"name": y_axis, "data": grouped[y_axis].tolist()}]}
+        return {
+            "xAxis": grouped[x_axis].tolist(),
+            "series": [{"name": y_axis, "data": grouped[y_axis].tolist()}],
+        }
 
     def _build_pie(self, df, y_axis, category_col):
         if not category_col or not y_axis:
             raise ValueError("category_col and y_axis are required")
         grouped = df.groupby(category_col)[y_axis].sum().reset_index()
-        return {"series": [{"data": [{"name": str(row[category_col]), "value": row[y_axis]} for _, row in grouped.iterrows()]}]}
+        return {
+            "series": [
+                {
+                    "data": [
+                        {"name": str(row[category_col]), "value": row[y_axis]}
+                        for _, row in grouped.iterrows()
+                    ]
+                }
+            ]
+        }
 
     @action(detail=True, methods=["get"])
     def export(self, request, pk=None):

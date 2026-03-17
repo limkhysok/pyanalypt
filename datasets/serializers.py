@@ -11,8 +11,7 @@ class DatasetSerializer(serializers.ModelSerializer):
             "file",
             "file_name",
             "file_format",
-            "row_count",
-            "column_count",
+            "file_size",
             "uploaded_date",
             "updated_date",
         )
@@ -20,8 +19,7 @@ class DatasetSerializer(serializers.ModelSerializer):
             "id",
             "user",
             "file_format",
-            "row_count",
-            "column_count",
+            "file_size",
             "uploaded_date",
             "updated_date",
         )
