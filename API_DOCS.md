@@ -157,7 +157,7 @@ Standard multipart/form-data upload.
 - **Endpoint**: `POST /datasets/upload/`
 - **Auth Required**: Yes
 - **Request (Form Data)**:
-  - `file`: The `.csv`, `.xlsx`, or `.json` file.
+  - `file`: The `.csv`, `.xlsx`, `.json`, or `.parquet` file.
 - **Response (201 Created)**: The newly created `Dataset` object.
 
 ### 2. List All Datasets
@@ -241,7 +241,7 @@ Download the dataset in a requested format.
 
 - **Endpoint**: `GET /datasets/{id}/export/`
 - **Auth Required**: Yes
-- **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`; defaults to original format)*
+- **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`, `parquet`; defaults to original format)*
 
 ---
 
@@ -335,6 +335,30 @@ Edit writable fields (e.g. `suggested_fix`, `description`).
 ### 5. Delete an Issue
 - **Endpoint**: `DELETE /issues/{id}/`
 - **Auth Required**: Yes
+
+### 6. Issue Summary / Stats
+Get aggregated issue counts for a dataset, grouped by type and column.
+
+- **Endpoint**: `GET /issues/summary/{dataset_id}/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+{
+  "dataset_id": 15,
+  "total_issues": 5,
+  "by_type": {
+    "MISSING_VALUE": 2,
+    "DUPLICATE": 1,
+    "OUTLIER": 2
+  },
+  "by_column": {
+    "email": 1,
+    "age": 2,
+    "salary": 1
+  },
+  "dataset_level_issues": 1
+}
+```
 
 ---
 

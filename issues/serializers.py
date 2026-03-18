@@ -16,4 +16,4 @@ class IssueSerializer(serializers.ModelSerializer):
             "suggested_fix",
             "detected_at",
         )
-        read_only_fields = ("id", "dataset", "affected_rows", "detected_at")
+        read_only_fields = ("id", "dataset", "row_index", "affected_rows", "detected_at")
