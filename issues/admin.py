@@ -8,18 +8,10 @@ class IssueAdmin(admin.ModelAdmin):
         "issue_type",
         "dataset",
         "column_name",
-        "severity",
-        "detected_by",
-        "is_resolved",
-        "is_user_modified",
         "detected_at",
     )
     list_filter = (
         "issue_type",
-        "severity",
-        "detected_by",
-        "is_resolved",
-        "is_user_modified",
         "detected_at",
     )
     search_fields = ("description", "column_name", "dataset__file_name")
@@ -41,17 +33,6 @@ class IssueAdmin(admin.ModelAdmin):
             "Description & Fix",
             {
                 "fields": ("description", "suggested_fix"),
-            },
-        ),
-        (
-            "Status",
-            {
-                "fields": (
-                    "severity",
-                    "is_resolved",
-                    "is_user_modified",
-                    "detected_by",
-                ),
             },
         ),
         (

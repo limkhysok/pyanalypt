@@ -147,45 +147,25 @@ PyAnalypt provides a full administrative interface for managing users and system
 
 ---
 
-## 📂 Dataset Management (The Data Engine)
+## 📂 Dataset Management
 
-All endpoints below follow the **api/v1/datasets/** prefix.
+All endpoints below are under `/api/v1/datasets/`.
 
-### 1. Upload File (Multipart)
-Standard multipart/form-data upload using your system's file picker.
+### 1. Upload File
+Standard multipart/form-data upload.
 
 - **Endpoint**: `POST /datasets/upload/`
+- **Auth Required**: Yes
 - **Request (Form Data)**:
   - `file`: The `.csv`, `.xlsx`, or `.json` file.
-- **Response**: The newly created `Dataset` object.
+- **Response (201 Created)**: The newly created `Dataset` object.
 
-### a. Paste Data (Raw Text)
-Create a dataset by pasting raw CSV/JSON text directly from your clipboard.
-
-- **Endpoint**: `POST /datasets/paste/`
-- **Request Body**:
-```json
-{
-  "file_name": "survey_results.csv",
-  "raw_data": "id,name,value\n1,test,100",
-  "format": "csv"
-}
-```
-
-### b. Dataset Actions (CRUD)
-
-- **Endpoint**: `GET /datasets/` - List all datasets for the logged-in user.
-- **Endpoint**: `GET /datasets/{id}/` - **Detail View**. Returns model fields **plus** a `data_preview` for immediate table display.
-- **Endpoint**: `PATCH /datasets/{id}/` - **Update Metadata**. Example: `{"file_name": "renamed.csv"}`.
-- **Endpoint**: `PATCH /datasets/{id}/update_cell/` - **Manual Edit**. Modify a specific cell in the file.
-  - Body: `{"row_index": 5, "column_name": "Age", "value": 25}`.
-- **Endpoint**: `DELETE /datasets/{id}/` - **Delete**. Removes the dataset and its associated file.
-
-### c. List All Datasets
-Retrieves a list of all datasets owned by the authenticated user.
+### 2. List All Datasets
+Retrieves all datasets owned by the authenticated user.
 
 - **Endpoint**: `GET /datasets/`
-- **Response Format**:
+- **Auth Required**: Yes
+- **Response (200 OK)**:
 ```json
 [
   {
@@ -199,31 +179,103 @@ Retrieves a list of all datasets owned by the authenticated user.
     "updated_date": "2026-03-17T10:30:00Z"
   }
 ]
-
 ```
 
-`file_size` is stored in bytes and is read-only metadata populated by the server.
+### 3. Dataset Detail
+Returns dataset metadata **plus** a `data_preview` (first 50 rows) for immediate table display.
 
-### 2. Run Diagnosis Scan
-Trigger a Pandas or Gemini AI scan on a dataset to detect dirty data. Results are saved as `Issue` records and returned grouped by column.
+- **Endpoint**: `GET /datasets/{id}/`
+- **Auth Required**: Yes
 
-- **Endpoint**: `POST /api/v1/datasets/{id}/diagnose/`
+### 4. Delete Dataset
+Removes the dataset record and its associated file from storage.
+
+- **Endpoint**: `DELETE /datasets/{id}/`
+- **Auth Required**: Yes
+
+### 5. Rename Dataset
+Rename the display file name of a dataset.
+
+- **Endpoint**: `PATCH /datasets/{id}/rename/`
 - **Auth Required**: Yes
 - **Request Body**:
 ```json
 {
-  "method": "pandas"
+  "file_name": "renamed_data.csv"
 }
 ```
-`method` options: `"pandas"` | `"gemini"` | `"both"` *(default: `"both"`)*
+- **Response (200 OK)**: Updated `Dataset` object.
 
+### 6. Preview Dataframe
+Get the first N rows of the dataset for inspection.
+
+- **Endpoint**: `GET /datasets/{id}/preview/`
+- **Auth Required**: Yes
+- **Query Params**: `?rows=50` *(default: 10, max: 1000)*
+
+### 7. Edit a Single Cell
+Modify a specific cell in the underlying data file.
+
+- **Endpoint**: `POST /datasets/{id}/update_cell/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "row_index": 5,
+  "column_name": "Age",
+  "value": 25
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "Cell updated.",
+  "row_index": 5,
+  "column_name": "Age",
+  "new_value": 25
+}
+```
+
+### 8. Export Dataset
+Download the dataset in a requested format.
+
+- **Endpoint**: `GET /datasets/{id}/export/`
+- **Auth Required**: Yes
+- **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`; defaults to original format)*
+
+---
+
+## ⚠️ Issue Management
+
+All endpoints below are under `/api/v1/issues/`.
+
+### Issue Object Schema
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | int | Unique identifier |
+| `dataset` | int | FK to the parent Dataset |
+| `issue_type` | string | See type choices below |
+| `column_name` | string | Column where the issue was detected (empty = dataset-level) |
+| `row_index` | int\|null | Specific row index (cell-level issues only) |
+| `affected_rows` | int\|null | Number of rows affected (column-level issues) |
+| `description` | string | Human-readable explanation |
+| `suggested_fix` | string | Recommended action |
+| `detected_at` | datetime | Timestamp of detection |
+
+**Issue Type Choices**: `MISSING_VALUE` | `DUPLICATE` | `OUTLIER` | `SEMANTIC_ERROR` | `DATA_TYPE` | `INCONSISTENT_FORMATTING` | `INVALID_VALUE` | `WHITESPACE_ISSUE` | `SPECIAL_CHAR_ENCODING` | `INCONSISTENT_NAMING` | `LOGICAL_INCONSISTENCY`
+
+### 1. Run Diagnosis Scan
+Trigger a Pandas-based scan on a dataset to detect dirty data. Results are saved as `Issue` records and returned grouped by column. Re-scanning **replaces** all previous issues.
+
+- **Endpoint**: `POST /issues/diagnose/{dataset_id}/`
+- **Auth Required**: Yes
+- **Request Body**: *(empty — no parameters needed)*
 - **Response (200 OK)**:
 ```json
 {
   "dataset_id": 15,
-  "method": "pandas",
   "total_issues": 3,
-  "warnings": [],
   "issues_by_column": {
     "email": [
       {
@@ -231,11 +283,7 @@ Trigger a Pandas or Gemini AI scan on a dataset to detect dirty data. Results ar
         "issue_type": "MISSING_VALUE",
         "affected_rows": 12,
         "description": "'email' has 12 missing value(s).",
-        "severity": "MEDIUM",
-        "suggested_fix": "Use the 'handle_na' operation to fill or drop these rows.",
-        "detected_by": "PANDAS",
-        "is_user_modified": false,
-        "is_resolved": false
+        "suggested_fix": "Use the 'handle_na' operation to fill or drop these rows."
       }
     ],
     "age": [
@@ -244,11 +292,7 @@ Trigger a Pandas or Gemini AI scan on a dataset to detect dirty data. Results ar
         "issue_type": "OUTLIER",
         "affected_rows": 2,
         "description": "'age' has 2 outlier(s) with Z-score > 3.",
-        "severity": "LOW",
-        "suggested_fix": "Use 'outlier_clip' to bound these values.",
-        "detected_by": "PANDAS",
-        "is_user_modified": false,
-        "is_resolved": false
+        "suggested_fix": "Use 'outlier_clip' to bound these values."
       }
     ],
     "__dataset__": [
@@ -257,71 +301,40 @@ Trigger a Pandas or Gemini AI scan on a dataset to detect dirty data. Results ar
         "issue_type": "DUPLICATE",
         "affected_rows": 5,
         "description": "Found 5 exact duplicate row(s) across the dataset.",
-        "severity": "LOW",
-        "suggested_fix": "Use the 'drop_duplicates' operation.",
-        "detected_by": "PANDAS",
-        "is_user_modified": false,
-        "is_resolved": false
+        "suggested_fix": "Use the 'drop_duplicates' operation."
       }
     ]
   }
 }
 ```
-> Re-scanning preserves any issue the user has manually modified (`is_user_modified: true`).
-> If Gemini quota is exceeded, the response still returns `200` with a message in `warnings`, and previous Gemini issues remain unchanged.
 
-### 3. Other Dataset Utilities
-
-- **Endpoint**: `GET /api/v1/datasets/{id}/query/` — **Analyst Search**: Manually filter the dataset.
-  - Query params: `?column=price&operator=lt&value=0` *(operators: `eq`, `gt`, `lt`, `contains`)*
-- **Endpoint**: `GET /api/v1/datasets/{id}/preview/` — Get the first 10–100 rows for inspection.
-  - Query params: `?rows=50` *(default: 10, max: 1000)*
-
----
-
-## ⚠️ Issue Management
-View and manage dirty-data issues detected during diagnosis.
-
-### Issue Object Schema
-
-| Field | Type | Description |
-|---|---|---|
-| `id` | int | Unique identifier |
-| `dataset` | int | FK to the parent Dataset |
-| `issue_type` | string | `MISSING_VALUE` \| `DUPLICATE` \| `OUTLIER` \| `TYPE_MISMATCH` \| `SEMANTIC_ERROR` |
-| `column_name` | string | Column where the issue was detected (empty = dataset-level) |
-| `row_index` | int\|null | Specific row index (cell-level issues only) |
-| `affected_rows` | int\|null | Number of rows affected (column-level issues) |
-| `description` | string | Human-readable explanation |
-| `severity` | string | `LOW` \| `MEDIUM` \| `HIGH` |
-| `suggested_fix` | string | Recommended action |
-| `detected_by` | string | `PANDAS` \| `GEMINI` \| `MANUAL` |
-| `is_user_modified` | bool | `true` if user has manually edited this issue |
-| `is_resolved` | bool | `true` if the issue has been fixed |
-| `detected_at` | datetime | Timestamp of detection |
-
-### a. List Issues for a Dataset
+### 2. List Issues for a Dataset
 Get all issues for a specific dataset, scoped to the authenticated user.
 
-- **Endpoint**: `GET /api/v1/issues/?dataset={id}`
+- **Endpoint**: `GET /issues/?dataset={id}`
 - **Auth Required**: Yes
 - **Response**: Array of Issue objects.
 
-### b. Update / Override an Issue
-User can edit any field (e.g. severity, suggested_fix, description) or resolve it.
-Any PATCH automatically sets `is_user_modified: true` to protect it from being overwritten on re-scan.
+### 3. Get Single Issue
+- **Endpoint**: `GET /issues/{id}/`
+- **Auth Required**: Yes
 
-- **Endpoint**: `PATCH /api/v1/issues/{id}/`
+### 4. Update an Issue
+Edit writable fields (e.g. `suggested_fix`, `description`).
+
+- **Endpoint**: `PATCH /issues/{id}/`
 - **Auth Required**: Yes
 - **Request Body** *(any subset of writable fields)*:
 ```json
 {
-  "severity": "HIGH",
-  "suggested_fix": "Drop these rows manually.",
-  "is_resolved": true
+  "issue_type": "INVALID_VALUE",
+  "suggested_fix": "Drop these rows manually."
 }
 ```
-- **Response (200 OK)**: Updated Issue object with `"is_user_modified": true`.
+
+### 5. Delete an Issue
+- **Endpoint**: `DELETE /issues/{id}/`
+- **Auth Required**: Yes
 
 ---
 
@@ -349,5 +362,5 @@ Any PATCH automatically sets `is_user_modified: true` to protect it from being o
 ## 🔗 Resources
 
 - **GitHub Repository**: [soklimkhy/pyanalypt](https://github.com/soklimkhy/pyanalypt)
-- **Last Updated**: 2026-03-17
+- **Last Updated**: 2026-03-18
 - **Status**: 🛠️ Refactoring for "Big Change"
