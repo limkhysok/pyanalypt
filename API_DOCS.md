@@ -458,8 +458,67 @@ Get aggregated issue counts for a dataset, grouped by type and column.
 
 ---
 
-## 🔗 Resources
+## 🧹 Cleaning Operations
 
-- **GitHub Repository**: [soklimkhy/pyanalypt](https://github.com/soklimkhy/pyanalypt)
-- **Last Updated**: 2026-03-18
-- **Status**: 🛠️ Refactoring for "Big Change"
+All endpoints below are under `/api/v1/cleaning/`.
+
+### CleaningOperation Object Schema
+
+| Field           | Type    | Description                                      |
+|-----------------|---------|--------------------------------------------------|
+| `id`            | int     | Unique identifier                                |
+| `dataset`       | int     | FK to the parent Dataset                         |
+| `issue`         | int\|null | FK to the related Issue (nullable)               |
+| `operation_type`| string  | Cleaning operation type (see choices below)      |
+| `column_name`   | string  | Column affected (blank for dataset-level ops)    |
+| `parameters`    | object  | Operation parameters (varies by type)            |
+| `rows_affected` | int\|null | Number of rows affected (if known)               |
+| `status`        | string  | PENDING, APPLIED, FAILED, REVERTED               |
+| `applied_at`    | datetime\|null | When operation was applied (if any)         |
+| `created_at`    | datetime| When operation was created                       |
+
+**Operation Type Choices:**
+`FILL_NA` | `DROP_ROWS` | `DROP_DUPLICATES` | `CLIP_OUTLIERS` | `REMOVE_OUTLIERS` | `CAST_COLUMN` | `STANDARDIZE_FORMAT` | `REPLACE_VALUES` | `STRIP_WHITESPACE` | `FIX_ENCODING` | `STANDARDIZE_CASE` | `RENAME_COLUMN`
+
+### 1. List Cleaning Operations
+- **Endpoint**: `GET /cleaning/?dataset={id}`
+- **Auth Required**: Yes
+- **Response (200 OK)**: Array of CleaningOperation objects
+
+### 2. Create (Apply) a Cleaning Operation
+- **Endpoint**: `POST /cleaning/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "dataset": 1,
+  "issue": 101,
+  "operation_type": "FILL_NA",
+  "column_name": "Salary",
+  "parameters": { "method": "mean" }
+}
+```
+- **Response (201 Created)**: CleaningOperation object (status will be PENDING or APPLIED)
+
+### 3. Revert a Cleaning Operation
+- **Endpoint**: `POST /cleaning/{id}/revert/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+{
+  "detail": "Operation reverted (not actually implemented)."
+}
+```
+
+### 4. Preview a Cleaning Operation
+- **Endpoint**: `POST /cleaning/preview/`
+- **Auth Required**: Yes
+- **Request Body**: Same as create
+- **Response (501 Not Implemented)**:
+```json
+{
+  "detail": "Preview not implemented yet."
+}
+```
+
+---

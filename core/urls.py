@@ -43,4 +43,6 @@ urlpatterns = [
     path("datasets/", include("datasets.urls")),
     # Issue Management
     path("issues/", include("issues.urls")),
+    # Cleaning Management
+    path("cleaning/", include("cleaning.urls")),
 ]

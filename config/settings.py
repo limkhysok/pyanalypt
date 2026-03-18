@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "core",
     "datasets",
     "issues",
+    "cleaning",
 ]
 
 MIDDLEWARE = [
