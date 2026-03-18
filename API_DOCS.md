@@ -268,6 +268,22 @@ All endpoints below are under `/api/v1/issues/`.
 ### 1. Run Diagnosis Scan
 Trigger a Pandas-based scan on a dataset to detect dirty data. Results are saved as `Issue` records and returned grouped by column. Re-scanning **replaces** all previous issues.
 
+The response includes a full **dataset overview** (shape, data types, null counts, duplicate rows, and numeric `describe()` stats) so the frontend can display summary info alongside the issues.
+
+**Scanners run automatically**:
+| Scanner | Issue Type | What it detects |
+|---|---|---|
+| Missing values | `MISSING_VALUE` | Null / NaN cells per column |
+| Duplicates | `DUPLICATE` | Exact duplicate rows |
+| Type inconsistencies | `DATA_TYPE` | Mixed Python types in a column |
+| Outliers | `OUTLIER` | Z-score > 3 in numeric columns |
+| Inconsistent formatting | `INCONSISTENT_FORMATTING` | Mixed date formats (e.g. YYYY-MM-DD vs MM/DD/YYYY) |
+| Invalid values | `INVALID_VALUE` | Negative numbers in columns like age, price, salary |
+| Whitespace issues | `WHITESPACE_ISSUE` | Leading/trailing/extra spaces in strings |
+| Encoding issues | `SPECIAL_CHAR_ENCODING` | Mojibake / garbled characters (Ã©, â€™, ï¿½) |
+| Inconsistent naming | `INCONSISTENT_NAMING` | Same category in mixed case (Male vs male vs MALE) |
+| Logical inconsistencies | `LOGICAL_INCONSISTENCY` | start_date > end_date, min > max |
+
 - **Endpoint**: `POST /issues/diagnose/{dataset_id}/`
 - **Auth Required**: Yes
 - **Request Body**: *(empty — no parameters needed)*
@@ -275,24 +291,83 @@ Trigger a Pandas-based scan on a dataset to detect dirty data. Results are saved
 ```json
 {
   "dataset_id": 15,
-  "total_issues": 3,
+  "overview": {
+    "shape": { "rows": 1000, "columns": 8 },
+    "duplicate_rows": 5,
+    "total_missing": 23,
+    "columns": {
+      "Name": { "dtype": "object", "non_null_count": 1000, "null_count": 0 },
+      "Age": { "dtype": "int64", "non_null_count": 988, "null_count": 12 },
+      "Salary": { "dtype": "float64", "non_null_count": 989, "null_count": 11 },
+      "Department": { "dtype": "object", "non_null_count": 1000, "null_count": 0 },
+      "Join_Date": { "dtype": "object", "non_null_count": 1000, "null_count": 0 }
+    },
+    "numeric_summary": {
+      "Age": {
+        "count": 988.0,
+        "mean": 35.42,
+        "std": 12.15,
+        "min": 18.0,
+        "25%": 26.0,
+        "50%": 34.0,
+        "75%": 44.0,
+        "max": 65.0
+      },
+      "Salary": {
+        "count": 989.0,
+        "mean": 72500.50,
+        "std": 25000.75,
+        "min": 30000.0,
+        "25%": 52000.0,
+        "50%": 70000.0,
+        "75%": 90000.0,
+        "max": 150000.0
+      }
+    }
+  },
+  "total_issues": 7,
   "issues_by_column": {
-    "email": [
+    "Age": [
       {
         "id": 42,
         "issue_type": "MISSING_VALUE",
         "affected_rows": 12,
-        "description": "'email' has 12 missing value(s).",
+        "description": "'Age' has 12 missing value(s).",
         "suggested_fix": "Use the 'handle_na' operation to fill or drop these rows."
-      }
-    ],
-    "age": [
+      },
       {
         "id": 43,
         "issue_type": "OUTLIER",
         "affected_rows": 2,
-        "description": "'age' has 2 outlier(s) with Z-score > 3.",
+        "description": "'Age' has 2 outlier(s) with Z-score > 3.",
         "suggested_fix": "Use 'outlier_clip' to bound these values."
+      }
+    ],
+    "Salary": [
+      {
+        "id": 45,
+        "issue_type": "MISSING_VALUE",
+        "affected_rows": 11,
+        "description": "'Salary' has 11 missing value(s).",
+        "suggested_fix": "Use the 'handle_na' operation to fill or drop these rows."
+      }
+    ],
+    "Department": [
+      {
+        "id": 46,
+        "issue_type": "INCONSISTENT_NAMING",
+        "affected_rows": 15,
+        "description": "'Department' has inconsistent naming: 'Sales' / 'sales'.",
+        "suggested_fix": "Standardize values to a consistent case (e.g. Title Case)."
+      }
+    ],
+    "Join_Date": [
+      {
+        "id": 47,
+        "issue_type": "INCONSISTENT_FORMATTING",
+        "affected_rows": null,
+        "description": "'Join_Date' has mixed date formats: MM/DD/YYYY, YYYY-MM-DD.",
+        "suggested_fix": "Standardize all dates to a single format (e.g. YYYY-MM-DD)."
       }
     ],
     "__dataset__": [
