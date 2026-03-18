@@ -38,7 +38,7 @@ class DatasetViewSet(
       PATCH  /datasets/{id}/rename/        — rename file_name
       GET    /datasets/{id}/preview/       — preview dataframe (?rows=N)
       POST   /datasets/{id}/update_cell/   — edit a single cell
-      GET    /datasets/{id}/export/        — export (?format=csv|json|xlsx)
+      GET    /datasets/{id}/export/        — export (?format=csv|json|xlsx|parquet)
     """
 
     serializer_class = DatasetSerializer
@@ -54,19 +54,23 @@ class DatasetViewSet(
     def _load_dataframe(self, path, file_format):
         if file_format == "csv":
             return pd.read_csv(path)
-        if file_format in ["xlsx", "xls"]:
+        if file_format in ["xlsx"]:
             return pd.read_excel(path)
         if file_format == "json":
             return pd.read_json(path)
+        if file_format == "parquet":
+            return pd.read_parquet(path)
         return None
 
     def _save_dataframe(self, df, path, file_format):
         if file_format == "csv":
             df.to_csv(path, index=False)
-        elif file_format in ["xlsx", "xls"]:
+        elif file_format in ["xlsx"]:
             df.to_excel(path, index=False)
         elif file_format == "json":
             df.to_json(path, orient="records")
+        elif file_format == "parquet":
+            df.to_parquet(path, index=False)
 
     def _get_preview_response(self, dataset, df, row_limit=10):
         preview_df = df.head(row_limit)
@@ -153,10 +157,12 @@ class DatasetViewSet(
         try:
             if dataset.file_format == "csv":
                 df = pd.read_csv(file_path, nrows=row_limit + 100)
-            elif dataset.file_format in ["xlsx", "xls"]:
+            elif dataset.file_format in ["xlsx"]:
                 df = pd.read_excel(file_path, nrows=row_limit + 100)
             elif dataset.file_format == "json":
                 df = pd.read_json(file_path).head(row_limit + 100)
+            elif dataset.file_format == "parquet":
+                df = pd.read_parquet(file_path).head(row_limit + 100)
             else:
                 return Response(
                     {"detail": ERR_UNSUPPORTED_FORMAT},
@@ -246,7 +252,7 @@ class DatasetViewSet(
 
     @action(detail=True, methods=["get"])
     def export(self, request, pk=None):
-        """GET /datasets/{id}/export/?format=csv|json|xlsx"""
+        """GET /datasets/{id}/export/?format=csv|json|xlsx|parquet"""
         dataset = self.get_object()
         file_path = dataset.file.path
         export_format = request.query_params.get("format", dataset.file_format).lower()
@@ -259,23 +265,33 @@ class DatasetViewSet(
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            response = HttpResponse()
+            import io
             base_name = dataset.file_name.split(".")[0]
 
             if export_format == "csv":
+                buf = io.StringIO()
+                df.to_csv(buf, index=False)
+                response = HttpResponse(buf.getvalue(), content_type="text/csv")
                 response["Content-Disposition"] = f'attachment; filename="{base_name}.csv"'
-                response["Content-Type"] = "text/csv"
-                df.to_csv(response, index=False)
             elif export_format in ["xlsx", "excel"]:
-                response["Content-Disposition"] = f'attachment; filename="{base_name}.xlsx"'
-                response["Content-Type"] = (
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                buf = io.BytesIO()
+                df.to_excel(buf, index=False)
+                buf.seek(0)
+                response = HttpResponse(
+                    buf.getvalue(),
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-                df.to_excel(response, index=False)
+                response["Content-Disposition"] = f'attachment; filename="{base_name}.xlsx"'
             elif export_format == "json":
+                data = df.to_json(orient="records")
+                response = HttpResponse(data, content_type="application/json")
                 response["Content-Disposition"] = f'attachment; filename="{base_name}.json"'
-                response["Content-Type"] = "application/json"
-                df.to_json(response, orient="records")
+            elif export_format == "parquet":
+                buf = io.BytesIO()
+                df.to_parquet(buf, index=False)
+                buf.seek(0)
+                response = HttpResponse(buf.getvalue(), content_type="application/octet-stream")
+                response["Content-Disposition"] = f'attachment; filename="{base_name}.parquet"'
             else:
                 return Response(
                     {"detail": f"Unsupported export format: {export_format}"},

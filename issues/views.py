@@ -35,10 +35,12 @@ class IssueViewSet(viewsets.ModelViewSet):
     def _load_dataframe(self, path, file_format):
         if file_format == "csv":
             return pd.read_csv(path)
-        if file_format in ["xlsx", "xls"]:
+        if file_format in ["xlsx"]:
             return pd.read_excel(path)
         if file_format == "json":
             return pd.read_json(path)
+        if file_format == "parquet":
+            return pd.read_parquet(path)
         return None
 
     @action(detail=False, methods=["post"], url_path=r"diagnose/(?P<dataset_pk>\d+)")

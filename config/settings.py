@@ -201,6 +201,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",  # Lock down by default
     ),
+    "URL_FORMAT_OVERRIDE": None,  # Free up ?format= for our export endpoint
 }
 
 

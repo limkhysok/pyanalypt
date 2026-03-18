@@ -6,8 +6,7 @@ def validate_file_size_and_type(value):
     """
     Validation for datasets:
     - Size limit: 25MB
-    - Formats: CSV, XLSX, XLS, JSON
-    - Potential for virus scanning integration here.
+    - Formats: CSV, XLSX, JSON, Parquet
     """
     # 25MB Limit
     filesize = value.size
@@ -16,6 +15,6 @@ def validate_file_size_and_type(value):
 
     # Extension Check
     ext = os.path.splitext(value.name)[1]
-    valid_extensions = [".csv", ".xlsx", ".xls", ".json"]
+    valid_extensions = [".csv", ".xlsx", ".json", ".parquet"]
     if ext.lower() not in valid_extensions:
-        raise ValidationError("Unsupported file extension. Use CSV, Excel, or JSON.")
+        raise ValidationError("Unsupported file extension. Use CSV, XLSX, JSON, or Parquet.")
