@@ -5,10 +5,10 @@ All endpoint documentation is in API_DOCS.md
 
 from django.urls import path, include
 from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
     TokenRefreshView,
     TokenVerifyView,
 )
+from django.conf import settings
 from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
 from allauth.socialaccount.providers.oauth2.client import OAuth2Client
 from dj_rest_auth.registration.views import SocialLoginView
@@ -25,24 +25,40 @@ class GoogleLogin(SocialLoginView):
     """
 
     adapter_class = GoogleOAuth2Adapter
-    callback_url = "http://localhost:8000/api/v1/auth/google/callback/"
+    callback_url = settings.GOOGLE_OAUTH_CALLBACK_URL
     client_class = OAuth2Client
 
 
 urlpatterns = [
-    # Authentication & User Management (dj-rest-auth)
+    # ── Auth: login / logout / password / user profile ──────────────────────
+    # POST   auth/login/                 Login with email + password
+    # POST   auth/logout/                Blacklist refresh token
+    # GET    auth/user/                  Get current user profile
+    # PATCH  auth/user/                  Update profile (partial)
     path("auth/", include("dj_rest_auth.urls")),
+
+    # ── Auth: registration & email verification ──────────────────────────────
+    # POST   auth/registration/              Register with email + password
+    # POST   auth/registration/verify-email/ Submit key from verification email
+    # POST   auth/registration/resend-email/ Resend verification link
     path("auth/registration/", include("dj_rest_auth.registration.urls")),
-    # Google OAuth (API-based for frontend apps)
+
+    # ── Google OAuth ─────────────────────────────────────────────────────────
+    # POST   auth/google/                Exchange Google access_token for JWT
     path("auth/google/", GoogleLogin.as_view(), name="google_login"),
-    # JWT Token Management
-    path("auth/token/", TokenObtainPairView.as_view(), name="token-obtain"),
+
+    # ── JWT Token Management ─────────────────────────────────────────────────
+    # POST   auth/token/refresh/         Get new access token using refresh token
+    # POST   auth/token/verify/          Check if a token is still valid
     path("auth/token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token-verify"),
-    # Dataset Management
+
+    # ── Dataset Management ───────────────────────────────────────────────────
     path("datasets/", include("datasets.urls")),
-    # Issue Management
+
+    # ── Issue Management ─────────────────────────────────────────────────────
     path("issues/", include("issues.urls")),
-    # Cleaning Management
+
+    # ── Cleaning Management ──────────────────────────────────────────────────
     path("cleaning/", include("cleaning.urls")),
 ]

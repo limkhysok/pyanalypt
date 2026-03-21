@@ -3,8 +3,12 @@ Custom adapter for django-allauth to handle Google OAuth signin
 and populate AuthUser model fields with Google metadata
 """
 
+import logging
+
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.account.adapter import DefaultAccountAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
@@ -38,9 +42,8 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
                     except AuthUser.DoesNotExist:
                         # User doesn't exist, will be created in populate_user
                         pass
-            except Exception:
-                # Silently fail if there's any issue with email matching
-                pass
+            except Exception as e:
+                logger.warning("pre_social_login email match failed: %s", e)
 
     def populate_user(self, request, sociallogin, data):
         """
@@ -118,6 +121,21 @@ class CustomAccountAdapter(DefaultAccountAdapter):
     """
     Custom Account Adapter for regular (non-social) signups.
     """
+
+    def get_email_confirmation_url(self, request, emailconfirmation):
+        """
+        Build the link that goes inside the verification email.
+        Points to the frontend page which then POSTs the key to
+        POST /api/v1/auth/registration/verify-email/
+        """
+        from django.conf import settings
+
+        url_template = getattr(
+            settings,
+            "ACCOUNT_EMAIL_CONFIRMATION_URL",
+            "http://localhost:3000/verify-email/{key}",
+        )
+        return url_template.format(key=emailconfirmation.key)
 
     def save_user(self, request, user, form, commit=True):
         """

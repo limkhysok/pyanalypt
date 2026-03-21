@@ -103,7 +103,7 @@ class AuthUser(AbstractUser):
                 message="Full name can only contain letters and spaces.",
             ),
             MinLengthValidator(
-                10, message="Full name must be at least 10 characters long."
+                2, message="Full name must be at least 2 characters long."
             ),
             MaxLengthValidator(255),
         ],
@@ -112,8 +112,8 @@ class AuthUser(AbstractUser):
     email = models.EmailField(
         unique=True,
         max_length=254,
-        null=True,
-        blank=True,
+        null=False,
+        blank=False,
         validators=[
             RegexValidator(
                 regex=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",

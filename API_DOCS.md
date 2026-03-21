@@ -22,68 +22,112 @@ Authorization: Bearer <access_token>
 ## 🔐 Authentication Endpoints
 
 ### 1. Register New User
-Create a new account using only a username and password.
+Create a new account with email and password. A verification link is sent to the email — the user cannot log in until the link is clicked.
 
 - **Endpoint**: `POST /auth/registration/`
 - **Auth Required**: No
 - **Request Body**:
 ```json
 {
-  "username": "johndoe",
-  "password1": "SecurePass123!",
-  "password2": "SecurePass123!"
+  "email": "user@example.com",
+  "password": "SecurePass123!"
 }
 ```
+> Optionally include `"first_name"` and `"last_name"`.
 
 - **Response (201 Created)**:
 ```json
 {
-  "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "user": {
-    "id": 1,
-    "username": "johndoe",
-    "email": null,
-    "first_name": null,
-    "last_name": null,
-    "full_name": null,
-    "profile_picture": null,
-    "email_verified": false,
-    "is_staff": false,
-    "is_active": true,
-    "date_joined": "2026-03-16T08:00:00Z"
-  }
+  "detail": "Verification e-mail sent."
 }
 ```
 
 ---
 
-### 2. Login
-Log in with either your **username** or **email**.
+### 2. Verify Email
+Confirm the email address using the key from the verification link sent to the user's inbox. This must be completed before the user can log in.
+
+- **Endpoint**: `POST /auth/registration/verify-email/`
+- **Auth Required**: No
+- **Request Body**:
+```json
+{
+  "key": "<key_from_email_link>"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "ok"
+}
+```
+
+> **Frontend flow:**
+> 1. User clicks link in email → lands on `http://localhost:3000/verify-email/MjA:1w3wGL:SkMWk8Po...`
+> 2. Frontend extracts the key from the **URL path** (everything after `/verify-email/`)
+> 3. Frontend calls `POST /api/v1/auth/registration/verify-email/` with `{"key": "<extracted_key>"}`
+> 4. On `200 OK` → redirect to `/dashboard` or `/login`
+
+---
+
+### 3. Resend Verification Email
+Resend the verification link if the user didn't receive it or it expired (links expire after **3 days**).
+
+- **Endpoint**: `POST /auth/registration/resend-email/`
+- **Auth Required**: No
+- **Request Body**:
+```json
+{
+  "email": "user@example.com"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "ok"
+}
+```
+
+---
+
+### 4. Login
+Log in with **email and password**.
 
 - **Endpoint**: `POST /auth/login/`
 - **Auth Required**: No
 - **Request Body**:
 ```json
 {
-  "username": "johndoe", 
+  "email": "user@example.com",
   "password": "SecurePass123!"
 }
 ```
-*(Note: You can pass your email in the "username" field to login via email)*
 
 - **Response (200 OK)**:
 ```json
 {
-  "access": "...",
-  "refresh": "...",
-  "user": { ... }
+  "access": "<access_token>",
+  "refresh": "<refresh_token>",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "username": "user",
+    "first_name": "John",
+    "last_name": "Doe",
+    "full_name": "John Doe",
+    "profile_picture": null,
+    "email_verified": true,
+    "is_staff": false,
+    "is_active": true,
+    "date_joined": "2026-03-21T00:00:00Z",
+    "last_login": "2026-03-21T06:00:00Z"
+  }
 }
 ```
 
 ---
 
-### 3. Logout
+### 5. Logout
 Invalidate the current session by blacklisting the refresh token.
 
 - **Endpoint**: `POST /auth/logout/`
@@ -97,15 +141,32 @@ Invalidate the current session by blacklisting the refresh token.
 
 ---
 
-### 4. Get Current User
+### 6. Get Current User
 Retrieve detailed profile information for the authenticated user.
 
 - **Endpoint**: `GET /auth/user/`
 - **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+{
+  "id": 1,
+  "email": "user@example.com",
+  "username": "user",
+  "first_name": "John",
+  "last_name": "Doe",
+  "full_name": "John Doe",
+  "profile_picture": null,
+  "email_verified": true,
+  "is_staff": false,
+  "is_active": true,
+  "date_joined": "2026-03-21T00:00:00Z",
+  "last_login": "2026-03-21T06:00:00Z"
+}
+```
 
 ---
 
-### 5. Update Profile (Partial)
+### 7. Update Profile (Partial)
 Update specific fields of your profile.
 
 - **Endpoint**: `PATCH /auth/user/`
@@ -122,17 +183,21 @@ Update specific fields of your profile.
 
 ## 🔑 JWT Token Management
 
-### 6. Refresh Access Token
-Exchange a refresh token for a new access token.
+### 8. Refresh Access Token
+Exchange a refresh token for a new access token. A new refresh token is also returned (rotation enabled).
 
 - **Endpoint**: `POST /auth/token/refresh/`
-- **Request Body**: `{"refresh": "<token>"}`
+- **Auth Required**: No
+- **Request Body**: `{"refresh": "<refresh_token>"}`
+- **Response (200 OK)**: `{"access": "<new_access_token>", "refresh": "<new_refresh_token>"}`
 
-### 7. Verify Token
-Check if a token is still valid.
+### 9. Verify Token
+Check if an access or refresh token is still valid.
 
 - **Endpoint**: `POST /auth/token/verify/`
+- **Auth Required**: No
 - **Request Body**: `{"token": "<token>"}`
+- **Response (200 OK)**: `{}` *(empty = valid)*
 
 ---
 

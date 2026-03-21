@@ -228,16 +228,16 @@ USE_TZ = True
 
 
 # ===== EMAIL CONFIGURATION =====
-# For development: Print emails to console instead of sending them
-# For production: Configure SMTP settings in .env
-if DEBUG:
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+if DEBUG and not EMAIL_HOST_USER:
+    # No SMTP credentials set — print emails to console (link visible in terminal)
     EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 else:
+    # Use SMTP when credentials are provided (works in both dev and prod)
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
     EMAIL_HOST = env("EMAIL_HOST", default="smtp.gmail.com")
     EMAIL_PORT = env.int("EMAIL_PORT", default=587)
     EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
-    EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
     EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@pyanalypt.com")
@@ -267,7 +267,7 @@ SITE_ID = 1
 # Modern configuration for allauth v0.60+
 ACCOUNT_UNIQUE_EMAIL = True
 ACCOUNT_USER_MODEL_USERNAME_FIELD = None
-ACCOUNT_EMAIL_VERIFICATION = "optional"
+ACCOUNT_EMAIL_VERIFICATION = "mandatory"
 ACCOUNT_EMAIL_CONFIRMATION_EXPIRE_DAYS = 3
 
 # Login methods: email + password only
@@ -304,6 +304,7 @@ REST_AUTH = {
     # Set to False so the refresh token is returned in the JSON body (SPA/mobile pattern).
     "JWT_AUTH_HTTPONLY": False,
     "USER_DETAILS_SERIALIZER": "core.serializers.CustomUserDetailsSerializer",
+    "REGISTER_SERIALIZER": "core.serializers.CustomRegisterSerializer",
 }
 
 # ===== SOCIAL ACCOUNT PROVIDERS =====
@@ -333,6 +334,16 @@ SOCIALACCOUNT_PROVIDERS = {
         "LOCALE_FUNC": lambda request: "en_US",
     }
 }
+
+GOOGLE_OAUTH_CALLBACK_URL = env("GOOGLE_REDIRECT_URI", default="http://localhost:8000/api/v1/auth/google/callback/")
+
+# Frontend URL where the user lands after clicking the verification link.
+# {key} is replaced with the actual confirmation key.
+# The frontend page should extract the key and POST it to /api/v1/auth/registration/verify-email/
+ACCOUNT_EMAIL_CONFIRMATION_URL = env(
+    "EMAIL_CONFIRMATION_URL",
+    default="http://localhost:3000/verify-email/{key}",
+)
 
 # ===== CUSTOM ADAPTER FOR GOOGLE OAUTH DATA =====
 # This will be used for regular (email/password) signup behavior
