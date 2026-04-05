@@ -57,11 +57,11 @@ INSTALLED_APPS = [
     "allauth.socialaccount.providers.google",
     "django.contrib.sites",
     # Local apps
-    "users",
-    "core",
-    "datasets",
-    "issues",
-    "cleaning",
+    "apps.users",
+    "apps.core",
+    "apps.datasets",
+    "apps.issues",
+    "apps.cleaning",
 ]
 
 MIDDLEWARE = [
@@ -276,7 +276,13 @@ ACCOUNT_LOGIN_METHODS = {"email"}
 
 # Signup fields for allauth v65+: email/password only.
 # Username is generated automatically in CustomAccountAdapter.
-ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*", "password2*", "first_name", "last_name"]
+ACCOUNT_SIGNUP_FIELDS = [
+    "email*",
+    "password1*",
+    "password2*",
+    "first_name",
+    "last_name",
+]
 
 # Login/Logout
 ACCOUNT_LOGIN_ON_EMAIL_CONFIRMATION = True
@@ -304,8 +310,8 @@ REST_AUTH = {
     # JWT_AUTH_HTTPONLY defaults to True which forces refresh="" in the response body.
     # Set to False so the refresh token is returned in the JSON body (SPA/mobile pattern).
     "JWT_AUTH_HTTPONLY": False,
-    "USER_DETAILS_SERIALIZER": "users.serializers.CustomUserDetailsSerializer",
-    "REGISTER_SERIALIZER": "users.serializers.CustomRegisterSerializer",
+    "USER_DETAILS_SERIALIZER": "apps.users.serializers.CustomUserDetailsSerializer",
+    "REGISTER_SERIALIZER": "apps.users.serializers.CustomRegisterSerializer",
 }
 
 # ===== SOCIAL ACCOUNT PROVIDERS =====
@@ -336,7 +342,9 @@ SOCIALACCOUNT_PROVIDERS = {
     }
 }
 
-GOOGLE_OAUTH_CALLBACK_URL = env("GOOGLE_REDIRECT_URI", default="http://localhost:8000/api/v1/auth/google/callback/")
+GOOGLE_OAUTH_CALLBACK_URL = env(
+    "GOOGLE_REDIRECT_URI", default="http://localhost:8000/api/v1/auth/google/callback/"
+)
 
 # Frontend URL where the user lands after clicking the verification link.
 # {key} is replaced with the actual confirmation key.
@@ -348,7 +356,7 @@ ACCOUNT_EMAIL_CONFIRMATION_URL = env(
 
 # ===== CUSTOM ADAPTER FOR GOOGLE OAUTH DATA =====
 # This will be used for regular (email/password) signup behavior
-ACCOUNT_ADAPTER = "users.adapters.CustomAccountAdapter"
+ACCOUNT_ADAPTER = "apps.users.adapters.CustomAccountAdapter"
 
 # This will be used to populate AuthUser fields from Google metadata
-SOCIALACCOUNT_ADAPTER = "users.adapters.CustomSocialAccountAdapter"
+SOCIALACCOUNT_ADAPTER = "apps.users.adapters.CustomSocialAccountAdapter"

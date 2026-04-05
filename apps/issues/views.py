@@ -4,7 +4,7 @@ from rest_framework import mixins, viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db.models import Count
-from datasets.models import Dataset
+from apps.datasets.models import Dataset
 from .models import Issue
 from .serializers import IssueSerializer
 
@@ -326,7 +326,7 @@ class IssueViewSet(
 
     def _check_special_char_encoding(self, dataset, df):
         """Detect non-ASCII characters and common mojibake patterns."""
-        mojibake_pattern = re.compile(r"[\ufffd]|Ã.|â€.|Â.")
+        mojibake_pattern = re.compile(r"\ufffd|Ã.|â€.|Â.")
         str_cols = df.select_dtypes(include=["object"]).columns
         for col in str_cols:
             vals = df[col].dropna().astype(str)
@@ -379,7 +379,10 @@ class IssueViewSet(
     def _check_logical_inconsistencies(self, dataset, df):
         """Detect logically impossible value combinations."""
         cols_lower = {c.lower().replace(" ", "_"): c for c in df.columns}
+        self._check_date_inconsistencies(dataset, df, cols_lower)
+        self._check_bound_inconsistencies(dataset, df, cols_lower)
 
+    def _check_date_inconsistencies(self, dataset, df, cols_lower):
         # Check: start_date > end_date
         start_candidates = ["start_date", "start_time", "begin_date", "date_start"]
         end_candidates = ["end_date", "end_time", "finish_date", "date_end"]
@@ -405,6 +408,7 @@ class IssueViewSet(
                     except Exception:
                         pass
 
+    def _check_bound_inconsistencies(self, dataset, df, cols_lower):
         # Check: min > max columns
         min_candidates = ["min", "minimum", "low", "lower_bound"]
         max_candidates = ["max", "maximum", "high", "upper_bound"]

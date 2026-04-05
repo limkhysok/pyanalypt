@@ -1,15 +1,12 @@
 
 
-import os
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from .models import CleaningOperation
 from .serializers import CleaningOperationSerializer
-from datasets.models import Dataset
-from core.data_engine import load_data, generate_summary_stats
-import pandas as pd
-
+from apps.datasets.models import Dataset
+from apps.core.data_engine import load_data, generate_summary_stats
 
 class CleaningOperationViewSet(viewsets.ModelViewSet):
     queryset = CleaningOperation.objects.all()
@@ -74,57 +71,79 @@ class CleaningOperationViewSet(viewsets.ModelViewSet):
             return Response({"detail": f"Preview failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def apply_cleaning_operation(self, df, operation_type, column_name, parameters):
-        # Basic implementations for demo; expand as needed
-        if operation_type == "FILL_NA":
-            value = parameters.get("value", 0)
-            if column_name:
-                df[column_name] = df[column_name].fillna(value)
-            else:
-                df = df.fillna(value)
-        elif operation_type == "DROP_ROWS":
-            condition = parameters.get("condition")
-            if column_name and condition:
-                df = df.query(f"{column_name}{condition}")
-        elif operation_type == "DROP_DUPLICATES":
-            df = df.drop_duplicates()
-        elif operation_type == "CLIP_OUTLIERS":
-            if column_name:
-                lower = parameters.get("lower")
-                upper = parameters.get("upper")
-                if lower is not None:
-                    df[column_name] = df[column_name].clip(lower=lower)
-                if upper is not None:
-                    df[column_name] = df[column_name].clip(upper=upper)
-        elif operation_type == "REMOVE_OUTLIERS":
-            if column_name:
-                q1 = df[column_name].quantile(0.25)
-                q3 = df[column_name].quantile(0.75)
-                iqr = q3 - q1
-                lower = q1 - 1.5 * iqr
-                upper = q3 + 1.5 * iqr
-                df = df[(df[column_name] >= lower) & (df[column_name] <= upper)]
-        elif operation_type == "CAST_COLUMN":
-            dtype = parameters.get("dtype", "str")
-            if column_name:
-                df[column_name] = df[column_name].astype(dtype)
-        elif operation_type == "STANDARDIZE_FORMAT":
-            # Example: lower case for string columns
-            if column_name:
-                df[column_name] = df[column_name].astype(str).str.lower()
-        elif operation_type == "REPLACE_VALUES":
-            if column_name and "to_replace" in parameters and "value" in parameters:
-                df[column_name] = df[column_name].replace(parameters["to_replace"], parameters["value"])
-        elif operation_type == "STRIP_WHITESPACE":
-            if column_name:
-                df[column_name] = df[column_name].astype(str).str.strip()
-        elif operation_type == "FIX_ENCODING":
-            # Not implemented: would require re-reading with correct encoding
-            pass
-        elif operation_type == "STANDARDIZE_CASE":
-            if column_name:
-                df[column_name] = df[column_name].astype(str).str.lower()
-        elif operation_type == "RENAME_COLUMN":
-            new_name = parameters.get("new_name")
-            if column_name and new_name:
-                df = df.rename(columns={column_name: new_name})
+        operation_method = getattr(self, f"_clean_{operation_type.lower()}", self._clean_unsupported)
+        return operation_method(df, column_name, parameters)
+
+    def _clean_unsupported(self, df, column_name, parameters):
+        return df
+
+    def _clean_fill_na(self, df, column_name, parameters):
+        value = parameters.get("value", 0)
+        if column_name:
+            df[column_name] = df[column_name].fillna(value)
+        else:
+            df = df.fillna(value)
+        return df
+
+    def _clean_drop_rows(self, df, column_name, parameters):
+        condition = parameters.get("condition")
+        if column_name and condition:
+            df = df.query(f"{column_name}{condition}")
+        return df
+
+    def _clean_drop_duplicates(self, df, column_name, parameters):
+        return df.drop_duplicates()
+
+    def _clean_clip_outliers(self, df, column_name, parameters):
+        if column_name:
+            lower = parameters.get("lower")
+            upper = parameters.get("upper")
+            if lower is not None:
+                df[column_name] = df[column_name].clip(lower=lower)
+            if upper is not None:
+                df[column_name] = df[column_name].clip(upper=upper)
+        return df
+
+    def _clean_remove_outliers(self, df, column_name, parameters):
+        if column_name:
+            q1 = df[column_name].quantile(0.25)
+            q3 = df[column_name].quantile(0.75)
+            iqr = q3 - q1
+            lower = q1 - 1.5 * iqr
+            upper = q3 + 1.5 * iqr
+            df = df[(df[column_name] >= lower) & (df[column_name] <= upper)]
+        return df
+
+    def _clean_cast_column(self, df, column_name, parameters):
+        dtype = parameters.get("dtype", "str")
+        if column_name:
+            df[column_name] = df[column_name].astype(dtype)
+        return df
+
+    def _clean_standardize_format(self, df, column_name, parameters):
+        # Merged logic with standardize_case to resolve identical branch warnings
+        return self._clean_standardize_case(df, column_name, parameters)
+
+    def _clean_replace_values(self, df, column_name, parameters):
+        if column_name and "to_replace" in parameters and "value" in parameters:
+            df[column_name] = df[column_name].replace(parameters["to_replace"], parameters["value"])
+        return df
+
+    def _clean_strip_whitespace(self, df, column_name, parameters):
+        if column_name:
+            df[column_name] = df[column_name].astype(str).str.strip()
+        return df
+
+    def _clean_fix_encoding(self, df, column_name, parameters):
+        return df
+
+    def _clean_standardize_case(self, df, column_name, parameters):
+        if column_name:
+            df[column_name] = df[column_name].astype(str).str.lower()
+        return df
+
+    def _clean_rename_column(self, df, column_name, parameters):
+        new_name = parameters.get("new_name")
+        if column_name and new_name:
+            df = df.rename(columns={column_name: new_name})
         return df

@@ -1,5 +1,5 @@
 from django.db import models
-from datasets.models import Dataset
+from apps.datasets.models import Dataset
 
 
 class Issue(models.Model):
@@ -29,7 +29,9 @@ class Issue(models.Model):
         (TYPE_LOGICAL_INCONSISTENCY, "Logical Inconsistency"),
     ]
 
-    dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="issues")
+    dataset = models.ForeignKey(
+        Dataset, on_delete=models.CASCADE, related_name="issues"
+    )
     issue_type = models.CharField(max_length=50, choices=TYPE_CHOICES)
     column_name = models.CharField(max_length=255, blank=True, default="")
     row_index = models.IntegerField(null=True, blank=True)

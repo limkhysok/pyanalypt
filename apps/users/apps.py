@@ -2,7 +2,7 @@ from django.apps import AppConfig
 
 
 class UsersConfig(AppConfig):
-    name = 'users'
+    name = 'apps.users'
 
     def ready(self):
-        import users.signals  # noqa: F401
+        import apps.users.signals  # noqa: F401
