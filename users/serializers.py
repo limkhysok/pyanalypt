@@ -3,12 +3,13 @@ from dj_rest_auth.registration.serializers import RegisterSerializer
 from rest_framework import serializers
 from allauth.account.adapter import get_adapter
 from allauth.account.utils import setup_user_email
-from .models import AuthUser
+from django.contrib.auth import get_user_model
 
+User = get_user_model()
 
 def _email_already_exists(email):
     """Return True if a user with this email already exists (verified or not)."""
-    return AuthUser.objects.filter(email__iexact=email).exists()
+    return User.objects.filter(email__iexact=email).exists()
 
 
 class CustomRegisterSerializer(RegisterSerializer):
@@ -69,7 +70,7 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
     """
 
     class Meta(UserDetailsSerializer.Meta):
-        model = AuthUser
+        model = User
         fields = (
             "id",
             "email",

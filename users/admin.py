@@ -1,9 +1,10 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models.auth_user import AuthUser
+from django.contrib.auth import get_user_model
 
+User = get_user_model()
 
-@admin.register(AuthUser)
+@admin.register(User)
 class AuthUserAdmin(BaseUserAdmin):
     """
     Custom admin for AuthUser model with all custom fields visible.

@@ -7,7 +7,9 @@ import logging
 
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.account.adapter import DefaultAccountAdapter
+from django.contrib.auth import get_user_model
 
+User = get_user_model()
 logger = logging.getLogger(__name__)
 
 
@@ -31,12 +33,10 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
             try:
                 email = sociallogin.account.extra_data.get("email")
                 if email:
-                    from users.models import AuthUser
-
                     try:
-                        user = AuthUser.objects.get(email=email)
+                        user = User.objects.get(email=email)
                         sociallogin.connect(request, user)
-                    except AuthUser.DoesNotExist:
+                    except User.DoesNotExist:
                         pass
             except Exception as e:
                 logger.warning("pre_social_login email match failed: %s", e)
@@ -85,12 +85,10 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
             user.email_verified = True
 
     def _generate_unique_username(self, email):
-        from users.models import AuthUser
-
         email_prefix = email.split("@")[0]
         username = email_prefix
         counter = 1
-        while AuthUser.objects.filter(username=username).exists():
+        while User.objects.filter(username=username).exists():
             username = f"{email_prefix}{counter}"
             counter += 1
         return username
@@ -152,12 +150,10 @@ class CustomAccountAdapter(DefaultAccountAdapter):
         return user
 
     def _generate_unique_username(self, email):
-        from users.models import AuthUser
-
         email_prefix = email.split("@")[0]
         username = email_prefix
         counter = 1
-        while AuthUser.objects.filter(username=username).exists():
+        while User.objects.filter(username=username).exists():
             username = f"{email_prefix}{counter}"
             counter += 1
         return username

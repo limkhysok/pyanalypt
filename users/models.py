@@ -115,17 +115,6 @@ class AuthUser(AbstractUser):
         help_text="Indicates whether the user's email has been verified.",
     )
 
-    password = models.CharField(
-        max_length=128,
-        validators=[
-            MinLengthValidator(
-                8,
-                message="Password hash must be at least 8 characters (this should be set via Django settings).",
-            ),
-        ],
-        help_text="Hashed password stored in the database.",
-    )
-
     is_superuser = models.BooleanField(
         default=False,
         help_text="Designates that this user has all permissions without explicitly assigning them.",
