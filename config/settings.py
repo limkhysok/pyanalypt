@@ -57,7 +57,11 @@ INSTALLED_APPS = [
     "allauth.socialaccount.providers.google",
     "django.contrib.sites",
     # Local apps
-    "core",
+    "apps.users",
+    "apps.core",
+    "apps.datasets",
+    "apps.issues",
+    "apps.cleaning",
 ]
 
 MIDDLEWARE = [
@@ -105,19 +109,72 @@ DATABASES = {
     "default": env.db(),
 }
 
-# Caching (Redis)
-CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": env("REDIS_URL"),
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
+# Caching Configuration
+# Development: In-memory cache (no Redis needed)
+# Production: Redis cache
+if DEBUG:
+    # Use local memory cache for development (no Redis required)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "unique-snowflake",
+        }
     }
-}
+else:
+    # Use Redis for production
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": env("REDIS_URL"),
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            },
+        }
+    }
 
-# CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = True  # For local development convenience
+
+# ===== CORS CONFIGURATION =====
+# Cross-Origin Resource Sharing settings for API access
+# Development: Allow all origins (for testing with localhost, Postman, etc.)
+# Production: Restrict to specific frontend domains
+
+if DEBUG:
+    # Development: Allow all origins for convenience
+    CORS_ALLOW_ALL_ORIGINS = True
+    CORS_ALLOW_CREDENTIALS = True
+else:
+    # Production: Only allow specific origins
+    CORS_ALLOWED_ORIGINS = env.list(
+        "CORS_ALLOWED_ORIGINS",
+        default=[
+            "https://yourdomain.com",
+            "https://www.yourdomain.com",
+        ],
+    )
+    CORS_ALLOW_CREDENTIALS = True
+
+# Methods allowed for CORS requests
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
+
+# Headers allowed in CORS requests
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+]
 
 
 # Password validation
@@ -146,6 +203,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",  # Lock down by default
     ),
+    "URL_FORMAT_OVERRIDE": None,  # Free up ?format= for our export endpoint
 }
 
 
@@ -170,39 +228,61 @@ USE_I18N = True
 USE_TZ = True
 
 
+# ===== EMAIL CONFIGURATION =====
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+if DEBUG and not EMAIL_HOST_USER:
+    # No SMTP credentials set — print emails to console (link visible in terminal)
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+else:
+    # Use SMTP when credentials are provided (works in both dev and prod)
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = env("EMAIL_HOST", default="smtp.gmail.com")
+    EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+    EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+    EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@pyanalypt.com")
+
+
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Media files (User-uploaded files like CSV, Excel, etc.)
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Custom User Model
-AUTH_USER_MODEL = "core.AuthUser"
+AUTH_USER_MODEL = "users.AuthUser"
 
 # --- Allauth & Social Auth Configuration ---
 SITE_ID = 1
 
 # ===== ALLAUTH ACCOUNT SETTINGS =====
-# Signup/Login Configuration
-ACCOUNT_SIGNUP_FIELDS = [
-    "email*",  # Required
-    "username*",  # Required
-    "password1*",  # Required
-    "password2*",  # Required
-]
-
-# Authentication Method
-ACCOUNT_EMAIL_REQUIRED = True
-ACCOUNT_USERNAME_REQUIRED = True
+# Modern configuration for allauth v0.60+
 ACCOUNT_UNIQUE_EMAIL = True
-ACCOUNT_USER_MODEL_USERNAME_FIELD = "username"
-
-# Email Verification
-ACCOUNT_EMAIL_VERIFICATION = "optional"  # 'mandatory', 'optional', or 'none'
+ACCOUNT_USER_MODEL_USERNAME_FIELD = None
+ACCOUNT_EMAIL_VERIFICATION = "mandatory"
 ACCOUNT_EMAIL_CONFIRMATION_EXPIRE_DAYS = 3
+
+# Login methods: email + password only
+ACCOUNT_LOGIN_METHODS = {"email"}
+
+# Signup fields for allauth v65+: email/password only.
+# Username is generated automatically in CustomAccountAdapter.
+ACCOUNT_SIGNUP_FIELDS = [
+    "email*",
+    "password1*",
+    "password2*",
+    "first_name",
+    "last_name",
+]
 
 # Login/Logout
 ACCOUNT_LOGIN_ON_EMAIL_CONFIRMATION = True
@@ -227,8 +307,11 @@ SOCIALACCOUNT_STORE_TOKENS = True
 # JWT Configuration with dj-rest-auth
 REST_AUTH = {
     "USE_JWT": True,
-    "JWT_AUTH_COOKIE": "pyanalypt-auth",
-    "JWT_AUTH_REFRESH_COOKIE": "pyanalypt-refresh-token",
+    # JWT_AUTH_HTTPONLY defaults to True which forces refresh="" in the response body.
+    # Set to False so the refresh token is returned in the JSON body (SPA/mobile pattern).
+    "JWT_AUTH_HTTPONLY": False,
+    "USER_DETAILS_SERIALIZER": "apps.users.serializers.CustomUserDetailsSerializer",
+    "REGISTER_SERIALIZER": "apps.users.serializers.CustomRegisterSerializer",
 }
 
 # ===== SOCIAL ACCOUNT PROVIDERS =====
@@ -259,6 +342,21 @@ SOCIALACCOUNT_PROVIDERS = {
     }
 }
 
+GOOGLE_OAUTH_CALLBACK_URL = env(
+    "GOOGLE_REDIRECT_URI", default="http://localhost:8000/api/v1/auth/google/callback/"
+)
+
+# Frontend URL where the user lands after clicking the verification link.
+# {key} is replaced with the actual confirmation key.
+# The frontend page should extract the key and POST it to /api/v1/auth/registration/verify-email/
+ACCOUNT_EMAIL_CONFIRMATION_URL = env(
+    "EMAIL_CONFIRMATION_URL",
+    default="http://localhost:3000/verify-email/{key}",
+)
+
 # ===== CUSTOM ADAPTER FOR GOOGLE OAUTH DATA =====
+# This will be used for regular (email/password) signup behavior
+ACCOUNT_ADAPTER = "apps.users.adapters.CustomAccountAdapter"
+
 # This will be used to populate AuthUser fields from Google metadata
-SOCIALACCOUNT_ADAPTER = "core.adapters.CustomSocialAccountAdapter"
+SOCIALACCOUNT_ADAPTER = "apps.users.adapters.CustomSocialAccountAdapter"
