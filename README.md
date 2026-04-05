@@ -1,102 +1,13 @@
 # PyAnalypt - Analytics Platform
 
-A Django-based analytics platform with RESTful API, JWT authentication, and Google OAuth integration.
+## ✨ Project Features
 
-## 🚀 Quick Start
-
-### Option 1: Running with Docker (Recommended)
-
-If you have Docker Desktop installed, this is the easiest way to get started. It handles Python, PostgreSQL, and Redis for you.
-
-1.  **Start the containers**
-    ```bash
-    docker-compose up --build
-    ```
-
-2.  **Create a superuser** (in a second terminal)
-    ```bash
-    docker-compose exec web python manage.py createsuperuser
-    ```
-
-The app will be available at: `http://localhost:8000/`
-
----
-
-### Option 2: Native Installation (Manual)
-
-#### Prerequisites
-- Python 3.13+
-- PostgreSQL database
-- Redis (for caching)
-
-#### Steps
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd pyanalypt
-   ```
-
-2. **Create virtual environment**
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate  # Windows
-   # source venv/bin/activate  # Linux/Mac
-   ```
-
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Configure environment**
-   - Copy `.env.example` to `.env`
-   - Update `DATABASE_URL` and `REDIS_URL`
-   - Add your Django `SECRET_KEY`
-
-5. **Run migrations & Start**
-   ```bash
-   python manage.py migrate
-   python manage.py runserver
-   ```
-
----
-
-## 📚 Documentation
-
-| Document | Description |
-|----------|-------------|
-| **[API_DOCS.md](API_DOCS.md)** | Complete API documentation with all endpoints |
-| **[plans.md](plans.md)** | Project planning and roadmap |
-| **[mermaid_live.md](mermaid_live.md)** | Database schema diagrams |
-| **[env.md](env.md)** | Environment variables reference |
-
----
-
-## 🔑 Admin Access
-
-- **URL**: http://127.0.0.1:8000/admin/
-- **Email**: `admin@pyanalypt.com`
-- **Password**: `admin123!@#`
-
----
-
-## 🌐 API Endpoints
-
-**Base URL**: `/api/v1/`
-
-### Authentication
-- `POST /auth/registration/` - Register with username/password
-- `POST /auth/login/` - Login with username or email
-- `POST /auth/logout/` - Logout
-- `GET /auth/user/` - Get current user
-- `PATCH /auth/user/` - Update user profile
-- `POST /auth/token/refresh/` - Refresh JWT token
-
-### OAuth
-- `POST /auth/google/` - Google OAuth login (backend exchange)
-
-See **[API_DOCS.md](API_DOCS.md)** for complete documentation.
+- **Robust REST API**: Fully functional endpoints powered by Django REST Framework.
+- **Authentication System**: Secure JWT-based authentication with email verifications and Google OAuth via `django-allauth`.
+- **Intelligent Data Engine**: Advanced Pandas operations running seamlessly under the hood to perform statistical generation.
+- **Dataset Management**: Upload, preview, and process datasets in various formats (CSV, Excel, JSON, Parquet).
+- **Automated Issue Diagnostics**: Auto-detects data anomalies like whitespace inconsistences, missing values, outliers, duplicate rows, and mojibake encodings.
+- **Data Cleaning Suite**: A wide suite of data transformation operations (fill NAs, clip outliers, drop rows, rename columns, fix encodings).
 
 ---
 
@@ -104,22 +15,28 @@ See **[API_DOCS.md](API_DOCS.md)** for complete documentation.
 
 ```
 pyanalypt/
-├── config/              # Django settings and main URLs
-├── core/                # Core application
-├── datasets/            # Dataset management
+├── config/              # Django settings, WSGI, ASGI, and main URLs
+├── apps/                # Core business logic directory
+│   ├── core/            # Core Pandas data engines and utilities 
+│   ├── datasets/        # Dataset ingestion, storage, and models
+│   ├── issues/          # Data anomaly diagnostics and reporting
+│   ├── cleaning/        # Operations to transform and clean data
+│   └── users/           # Custom AuthUser models and OAuth handlers
 ├── .env                 # Environment variables
 ├── Dockerfile           # Docker image configuration
 ├── docker-compose.yml   # Multi-container orchestration
 ├── manage.py            # Django management script
 ├── requirements.txt     # Python dependencies
-└── API_DOCS.md          # API documentation
+└── API_DOCS.md          # Comprehensive API documentation
 ```
 
 ---
 
-## 🛠️ Tech Stack
+## 📚 Related Documentation
 
-- **Backend**: Django 5.2+, DRF, Pandas, Scikit-learn
-- **Database**: PostgreSQL
-- **Cache**: Redis
-- **Auth**: JWT (SimpleJWT), Google OAuth (Allauth)
+If you'd like to explore the specifics of our architecture, endpoints, or environment setup, please refer to the dedicated documentation files below:
+
+- 📖 **[API Documentation (`API_DOCS.md`)](./API_DOCS.md)**: Discover and interact with our fully documented Django REST framework endpoints.
+- ⚙️ **[Environment Setup (`env.md`)](./env.md)**: Learn how to configure your local `.env`.
+- 🗺️ **[Database Schemas (`mermaid_live.md`)](./mermaid_live.md)**: View our visual architecture pipelines and schema mappings.
+- 🚀 **[Project Roadmaps (`plans.md`)](./plans.md)**: Check out the planned updates and milestones.
