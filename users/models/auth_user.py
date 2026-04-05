@@ -35,15 +35,9 @@ class AuthUserManager(BaseUserManager):
         return self.create_user(username, password, **extra_fields)
 
 
-# Custom User Model for pyanalypt
-# This WILL be migrated to create the auth_user table
-
-
 class AuthUser(AbstractUser):
-    objects = AuthUserManager() # Assign the custom manager
-    # Custom fields from mermaid_live.md (Differences from standard Django)
+    objects = AuthUserManager()
 
-    # first_name: Optional, letters only
     first_name = models.CharField(
         max_length=150,
         blank=True,
@@ -58,7 +52,6 @@ class AuthUser(AbstractUser):
         ],
     )
 
-    # last_name: Optional, letters only
     last_name = models.CharField(
         max_length=150,
         blank=True,
@@ -73,7 +66,6 @@ class AuthUser(AbstractUser):
         ],
     )
 
-    # username: Alphanumeric + underscores/hyphens/dots, min 3 chars, unique
     username = models.CharField(
         max_length=150,
         unique=True,
@@ -90,7 +82,6 @@ class AuthUser(AbstractUser):
         ],
     )
 
-    # full_name: Letters only, spaces allowed, min 10 chars, max 255 chars (Optional in form)
     full_name = models.CharField(
         max_length=255,
         blank=True,
@@ -105,7 +96,7 @@ class AuthUser(AbstractUser):
             MaxLengthValidator(255),
         ],
     )
-    # email: Unique, valid email format, domain validation (Optional)
+
     email = models.EmailField(
         unique=True,
         max_length=254,
@@ -119,14 +110,11 @@ class AuthUser(AbstractUser):
         ],
     )
 
-    # email_verified: Tracks email verification status (Google OAuth auto-verifies)
     email_verified = models.BooleanField(
         default=False,
         help_text="Indicates whether the user's email has been verified.",
     )
 
-    # password: Hashed password string (validation done via AUTH_PASSWORD_VALIDATORS in settings)
-    # Model-level validation for minimum length of hashed passwords
     password = models.CharField(
         max_length=128,
         validators=[
@@ -138,40 +126,34 @@ class AuthUser(AbstractUser):
         help_text="Hashed password stored in the database.",
     )
 
-    # is_superuser: Admin privileges flag
     is_superuser = models.BooleanField(
         default=False,
         help_text="Designates that this user has all permissions without explicitly assigning them.",
     )
 
-    # is_staff: Staff status flag
     is_staff = models.BooleanField(
         default=False,
         help_text="Designates whether the user can log into the admin site.",
     )
 
-    # is_active: Account active status
     is_active = models.BooleanField(
         default=True,
         help_text="Designates whether this user account should be treated as active. Unselect this instead of deleting accounts.",
     )
 
-    # date_joined: Account creation timestamp (cannot be in the future)
     date_joined = models.DateTimeField(
         default=timezone.now,
         help_text="Date and time when the user account was created.",
     )
 
-    # last_login: Last successful login timestamp (nullable, cannot be in the future)
     last_login = models.DateTimeField(
         null=True,
         blank=True,
         help_text="Date and time of the user's last successful login.",
     )
 
-    # Must be HTTPS for security, supports Google/CDN URLs
     profile_picture = models.URLField(
-        max_length=1024,  # Increased for long CDN URLs (Google, Cloudinary, etc.)
+        max_length=1024,
         null=True,
         blank=True,
         validators=[
@@ -183,12 +165,11 @@ class AuthUser(AbstractUser):
         help_text="URL to the user's profile picture (typically from Google OAuth or uploaded to CDN).",
     )
 
-    # USERNAME_FIELD defines what field is used for login (we use username)
     USERNAME_FIELD = "username"
     REQUIRED_FIELDS = []
 
     class Meta:
-        managed = True  # Enable Django migrations for this model
+        managed = True
         db_table = "auth_user"
         verbose_name = "User"
         verbose_name_plural = "Users"
@@ -198,14 +179,9 @@ class AuthUser(AbstractUser):
         return self.username
 
     def save(self, *args, **kwargs):
-        """
-        Override save to ensure email is lowercase for consistency.
-        """
-        # Normalize email to lowercase
         if self.email:
             self.email = self.email.lower()
 
-        # Auto-generate full_name if not provided
         if not self.full_name and self.first_name and self.last_name:
             self.full_name = f"{self.first_name} {self.last_name}"
 

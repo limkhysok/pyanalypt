@@ -10,7 +10,12 @@ from django.conf.urls.static import static
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("api/v1/", include("core.urls")),
+    path("api/v1/", include([
+        path("", include("users.urls")),              # auth/...
+        path("datasets/", include("datasets.urls")),
+        path("issues/", include("issues.urls")),
+        path("cleaning/", include("cleaning.urls")),
+    ])),
     path("accounts/", include("allauth.urls")),  # Google OAuth
 ]
 

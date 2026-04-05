@@ -8,7 +8,7 @@ class AuthUserGroups(models.Model):
     id = models.AutoField(primary_key=True)
     # The column name in the database is 'authuser_id'
     user = models.ForeignKey(
-        "AuthUser", on_delete=models.CASCADE, db_column="authuser_id"
+        "users.AuthUser", on_delete=models.CASCADE, db_column="authuser_id"
     )
     # The column name in the database is 'group_id'
     group = models.ForeignKey(

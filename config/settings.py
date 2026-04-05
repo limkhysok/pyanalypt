@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "allauth.socialaccount.providers.google",
     "django.contrib.sites",
     # Local apps
+    "users",
     "core",
     "datasets",
     "issues",
@@ -258,7 +259,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Custom User Model
-AUTH_USER_MODEL = "core.AuthUser"
+AUTH_USER_MODEL = "users.AuthUser"
 
 # --- Allauth & Social Auth Configuration ---
 SITE_ID = 1
@@ -303,8 +304,8 @@ REST_AUTH = {
     # JWT_AUTH_HTTPONLY defaults to True which forces refresh="" in the response body.
     # Set to False so the refresh token is returned in the JSON body (SPA/mobile pattern).
     "JWT_AUTH_HTTPONLY": False,
-    "USER_DETAILS_SERIALIZER": "core.serializers.CustomUserDetailsSerializer",
-    "REGISTER_SERIALIZER": "core.serializers.CustomRegisterSerializer",
+    "USER_DETAILS_SERIALIZER": "users.serializers.CustomUserDetailsSerializer",
+    "REGISTER_SERIALIZER": "users.serializers.CustomRegisterSerializer",
 }
 
 # ===== SOCIAL ACCOUNT PROVIDERS =====
@@ -347,7 +348,7 @@ ACCOUNT_EMAIL_CONFIRMATION_URL = env(
 
 # ===== CUSTOM ADAPTER FOR GOOGLE OAUTH DATA =====
 # This will be used for regular (email/password) signup behavior
-ACCOUNT_ADAPTER = "core.adapters.CustomAccountAdapter"
+ACCOUNT_ADAPTER = "users.adapters.CustomAccountAdapter"
 
 # This will be used to populate AuthUser fields from Google metadata
-SOCIALACCOUNT_ADAPTER = "core.adapters.CustomSocialAccountAdapter"
+SOCIALACCOUNT_ADAPTER = "users.adapters.CustomSocialAccountAdapter"
