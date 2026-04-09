@@ -360,3 +360,9 @@ ACCOUNT_ADAPTER = "apps.users.adapters.CustomAccountAdapter"
 
 # This will be used to populate AuthUser fields from Google metadata
 SOCIALACCOUNT_ADAPTER = "apps.users.adapters.CustomSocialAccountAdapter"
+
+
+# ===== OLLAMA AI SETTINGS =====
+# Local LLM integration for data analysis
+OLLAMA_API_URL = env("OLLAMA_API_URL", default="http://localhost:11434/api/generate")
+OLLAMA_MODEL = env("OLLAMA_MODEL", default="qwen2.5:7b")

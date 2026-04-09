@@ -7,6 +7,8 @@ from rest_framework.decorators import action
 from django.http import HttpResponse
 from .models import Dataset
 from .serializers import DatasetSerializer
+from apps.core.data_engine import load_data, generate_summary_stats
+from apps.core.ollama_client import analyze_dataset_metadata
 
 ERR_UNSUPPORTED_FORMAT = "Unsupported format."
 
@@ -39,6 +41,7 @@ class DatasetViewSet(
       GET    /datasets/{id}/preview/       — preview dataframe (?rows=N)
       POST   /datasets/{id}/update_cell/   — edit a single cell
       GET    /datasets/{id}/export/        — export (?format=csv|json|xlsx|parquet)
+      POST   /datasets/{id}/analyze_issues/ — generate AI insights via Ollama
     """
 
     serializer_class = DatasetSerializer
@@ -303,5 +306,51 @@ class DatasetViewSet(
         except Exception as e:
             return Response(
                 {"detail": f"Export failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    # ------------------------------------------------------------------
+    # AI Analysis (Ollama)
+    # ------------------------------------------------------------------
+
+    @action(detail=True, methods=["post"])
+    def analyze_issues(self, request, pk=None):
+        """
+        POST /datasets/{id}/analyze_issues/
+        Uses local Ollama to generate problem statements based on column metadata.
+        """
+        dataset = self.get_object()
+        
+        try:
+            # 1. Load data and generate stats
+            df = load_data(dataset.file.path)
+            stats = generate_summary_stats(df)
+            
+            # 2. Extract column names and a smaller version of stats for the prompt
+            columns = stats.get("columns", [])
+            column_names = [col["name"] for col in columns]
+            
+            # We don't want to send too much data, just the essence
+            simplified_stats = []
+            for col in columns:
+                simplified_stats.append({
+                    "name": col["name"],
+                    "type": col["type"],
+                    "missing": col["missing"],
+                    "unique": col["unique"]
+                })
+            
+            # 3. Call Ollama
+            ai_response = analyze_dataset_metadata(column_names, simplified_stats)
+            
+            return Response({
+                "dataset_id": dataset.id,
+                "file_name": dataset.file_name,
+                "problem_statements": ai_response
+            })
+            
+        except Exception as e:
+            return Response(
+                {"detail": f"AI Analysis failed: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )

@@ -308,6 +308,32 @@ Download the dataset in a requested format.
 - **Auth Required**: Yes
 - **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`, `parquet`; defaults to original format)*
 
+### 9. AI Data Analysis (Ollama)
+Generate "problem statements" or analysis goals for the dataset using a local Ollama AI model. This endpoint analyzes column metadata (names, types, missing values, unique values) to provide AI-generated insights.
+
+- **Endpoint**: `POST /datasets/{id}/analyze_issues/`
+- **Auth Required**: Yes
+
+**Sample Request**:
+```http
+POST /api/v1/datasets/15/analyze_issues/
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{}
+```
+> Note: Body can be empty as headers/stats are extracted automatically from the stored file.
+
+**Sample Response (200 OK)**:
+```json
+{
+  "dataset_id": 15,
+  "file_name": "pharma_sales_data.csv",
+  "problem_statements": "1. **Negative Price Outliers**: The 'unit_price' column contains negative values...\n2. **Missing Dosage Metadata**: A significant number of rows are missing 'dosage' info...\n3. **Temporal Analysis Gap**: The distribution of 'sale_date' suggests reporting gaps."
+}
+```
+> **Note**: This requires a local Ollama instance running with the `llama3` model (configurable in `config/settings.py`).
+
 ---
 
 ## ⚠️ Issue Management
