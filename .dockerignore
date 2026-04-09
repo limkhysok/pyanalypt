@@ -1,14 +1,54 @@
+# Git
 .git
 .gitignore
-venv/
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.db.sqlite3
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment & secrets
 .env
-media/
+.env.*
+
+# Django generated
 staticfiles/
+media/
+*.log
+db.sqlite3
+
+# IDE / editor
 .vscode/
 .idea/
-*.log
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+docker-compose*.yml
+
+# Docs & misc
+*.md
+plans.md
+mermaid_live.md
+env.md
+
+# Test / dev data
+*.csv
+*.xlsx
+*.json
+1000rows.py
+pharma_sales_data_dirty.csv

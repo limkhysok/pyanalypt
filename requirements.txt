@@ -1,4 +1,5 @@
 Django
+gunicorn
 djangorestframework
 pandas
 scikit-learn
