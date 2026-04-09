@@ -8,8 +8,6 @@ from django.http import HttpResponse
 from .models import Dataset
 from .serializers import DatasetSerializer
 from apps.core.data_engine import load_data, generate_summary_stats
-from apps.core.ollama_client import stream_dataset_analysis
-from django.http import StreamingHttpResponse
 
 ERR_UNSUPPORTED_FORMAT = "Unsupported format."
 
@@ -310,40 +308,3 @@ class DatasetViewSet(
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-    # ------------------------------------------------------------------
-    # AI Analysis (Ollama)
-    # ------------------------------------------------------------------
-
-    @action(detail=True, methods=["post"])
-    def analyze_issues(self, request, pk=None):
-        """
-        POST /datasets/{id}/analyze_issues/
-        Streams AI-generated problem statements via Server-Sent Events (SSE).
-
-        Client receives a stream of:
-            data: <token>\n\n   — one token at a time
-            data: [DONE]\n\n    — end of stream
-            data: [ERROR] ...\n\n — if Ollama fails
-        """
-        dataset = self.get_object()
-
-        df = load_data(dataset.file.path)
-        stats = generate_summary_stats(df)
-
-        columns = stats.get("columns", [])
-        column_names = [col["name"] for col in columns]
-        simplified_stats = [
-            {
-                "name": col["name"],
-                "type": col["type"],
-                "missing": col["missing"],
-                "unique": col["unique"],
-            }
-            for col in columns
-        ]
-
-        stream = stream_dataset_analysis(column_names, simplified_stats)
-        response = StreamingHttpResponse(stream, content_type="text/event-stream")
-        response["Cache-Control"] = "no-cache"
-        response["X-Accel-Buffering"] = "no"  # Disable Nginx buffering if proxied
-        return response

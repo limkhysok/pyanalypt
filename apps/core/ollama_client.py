@@ -56,16 +56,16 @@ class OllamaClient:
             raise OllamaError(f"Failed to connect to Ollama: {str(e)}")
 
 
-def analyze_dataset_metadata(columns, sample_stats=None):
+def frame_problem(columns, sample_stats=None):
     """
-    Returns the full AI analysis as a single string (non-streaming).
+    Returns the full Problem Framing result as a single string (non-streaming).
     """
     client = OllamaClient()
     system_prompt, prompt = _build_prompt(columns, sample_stats)
     return client.generate_response(prompt, system_prompt=system_prompt)
 
 
-def stream_dataset_analysis(columns, sample_stats=None):
+def stream_frame_problem(columns, sample_stats=None):
     """
     Yields SSE-formatted data chunks for streaming to the client.
     Format: data: <token>\n\n

@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     "apps.datasets",
     "apps.issues",
     "apps.cleaning",
+    "apps.datasetframe",
 ]
 
 MIDDLEWARE = [

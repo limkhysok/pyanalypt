@@ -18,6 +18,7 @@ urlpatterns = [
                 path("datasets/", include("apps.datasets.urls")),
                 path("issues/", include("apps.issues.urls")),
                 path("cleaning/", include("apps.cleaning.urls")),
+                path("frames/", include("apps.datasetframe.urls")),
             ]
         ),
     ),
