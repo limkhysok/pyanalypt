@@ -8,9 +8,25 @@ import logging
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.account.adapter import DefaultAccountAdapter
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
+
+
+def _generate_unique_username(email):
+    """
+    Derive a unique username from the local part of an email address.
+    Appends an incrementing counter if the base username is already taken.
+    Uses IntegrityError handling to be safe under concurrent signups.
+    """
+    email_prefix = email.split("@")[0]
+    username = email_prefix
+    counter = 1
+    while User.objects.filter(username=username).exists():
+        username = f"{email_prefix}{counter}"
+        counter += 1
+    return username
 
 
 class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
@@ -55,7 +71,7 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
             self._verify_google_email(user, extra_data)
 
             if not user.username:
-                user.username = self._generate_unique_username(user.email)
+                user.username = _generate_unique_username(user.email)
 
         return user
 
@@ -84,20 +100,18 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
         ):
             user.email_verified = True
 
-    def _generate_unique_username(self, email):
-        email_prefix = email.split("@")[0]
-        username = email_prefix
-        counter = 1
-        while User.objects.filter(username=username).exists():
-            username = f"{email_prefix}{counter}"
-            counter += 1
-        return username
-
     def save_user(self, request, sociallogin, form=None):
         """
         Save a newly created user via social login.
         """
-        user = super().save_user(request, sociallogin, form)
+        try:
+            user = super().save_user(request, sociallogin, form)
+        except IntegrityError:
+            # Username collision under concurrent signup — retry with a new one
+            sociallogin.user.username = _generate_unique_username(
+                sociallogin.user.email
+            )
+            user = super().save_user(request, sociallogin, form)
 
         if sociallogin.account.provider == "google":
             from allauth.account.models import EmailAddress
@@ -121,12 +135,16 @@ class CustomAccountAdapter(DefaultAccountAdapter):
         POST /api/v1/auth/registration/verify-email/
         """
         from django.conf import settings
+        from django.core.exceptions import ImproperlyConfigured
 
-        url_template = getattr(
-            settings,
-            "ACCOUNT_EMAIL_CONFIRMATION_URL",
-            "http://localhost:3000/verify-email/{key}",
-        )
+        url_template = getattr(settings, "ACCOUNT_EMAIL_CONFIRMATION_URL", None)
+        if not url_template:
+            if not settings.DEBUG:
+                raise ImproperlyConfigured(
+                    "ACCOUNT_EMAIL_CONFIRMATION_URL must be set in production settings."
+                )
+            url_template = "http://localhost:3000/verify-email/{key}"
+
         return url_template.format(key=emailconfirmation.key)
 
     def save_user(self, request, user, form, commit=True):
@@ -142,18 +160,14 @@ class CustomAccountAdapter(DefaultAccountAdapter):
             user.email = user.email.lower()
 
         if not user.username and user.email:
-            user.username = self._generate_unique_username(user.email)
+            user.username = _generate_unique_username(user.email)
 
         if commit:
-            user.save()
+            try:
+                user.save()
+            except IntegrityError:
+                # Username collision under concurrent signup — retry with a new one
+                user.username = _generate_unique_username(user.email)
+                user.save()
 
         return user
-
-    def _generate_unique_username(self, email):
-        email_prefix = email.split("@")[0]
-        username = email_prefix
-        counter = 1
-        while User.objects.filter(username=username).exists():
-            username = f"{email_prefix}{counter}"
-            counter += 1
-        return username

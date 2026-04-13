@@ -7,6 +7,10 @@ from django.core.validators import (
 from django.utils import timezone
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 
+NAME_REGEX = r"^[a-zA-ZÀ-ÿ'\- ]+$"
+NAME_REGEX_MESSAGE = "Only letters, hyphens, apostrophes, and spaces are allowed."
+
+
 class AuthUserManager(BaseUserManager):
     """
     Custom manager for AuthUser where username is the primary identifier.
@@ -42,13 +46,8 @@ class AuthUser(AbstractUser):
         max_length=150,
         blank=True,
         validators=[
-            RegexValidator(
-                regex=r"^[a-zA-ZÀ-ÿ'\- ]+$",
-                message="First name can only contain letters, hyphens, apostrophes, and spaces.",
-            ),
-            MinLengthValidator(
-                2, message="First name must be at least 2 characters long."
-            ),
+            RegexValidator(regex=NAME_REGEX, message=NAME_REGEX_MESSAGE),
+            MinLengthValidator(2, message="First name must be at least 2 characters long."),
         ],
     )
 
@@ -56,13 +55,8 @@ class AuthUser(AbstractUser):
         max_length=150,
         blank=True,
         validators=[
-            RegexValidator(
-                regex=r"^[a-zA-ZÀ-ÿ'\- ]+$",
-                message="Last name can only contain letters, hyphens, apostrophes, and spaces.",
-            ),
-            MinLengthValidator(
-                2, message="Last name must be at least 2 characters long."
-            ),
+            RegexValidator(regex=NAME_REGEX, message=NAME_REGEX_MESSAGE),
+            MinLengthValidator(2, message="Last name must be at least 2 characters long."),
         ],
     )
 
@@ -76,9 +70,7 @@ class AuthUser(AbstractUser):
                 regex=r"^[a-zA-Z0-9._-]+$",
                 message="Username can only contain letters, numbers, dots, underscores, and hyphens.",
             ),
-            MinLengthValidator(
-                3, message="Username must be at least 3 characters long."
-            ),
+            MinLengthValidator(3, message="Username must be at least 3 characters long."),
         ],
     )
 
@@ -86,13 +78,8 @@ class AuthUser(AbstractUser):
         max_length=255,
         blank=True,
         validators=[
-            RegexValidator(
-                regex=r"^[a-zA-ZÀ-ÿ ]+$",
-                message="Full name can only contain letters and spaces.",
-            ),
-            MinLengthValidator(
-                2, message="Full name must be at least 2 characters long."
-            ),
+            RegexValidator(regex=NAME_REGEX, message=NAME_REGEX_MESSAGE),
+            MinLengthValidator(2, message="Full name must be at least 2 characters long."),
             MaxLengthValidator(255),
         ],
     )
@@ -155,7 +142,7 @@ class AuthUser(AbstractUser):
     )
 
     USERNAME_FIELD = "username"
-    REQUIRED_FIELDS = []
+    REQUIRED_FIELDS = ["email"]
 
     class Meta:
         managed = True
@@ -171,8 +158,10 @@ class AuthUser(AbstractUser):
         if self.email:
             self.email = self.email.lower()
 
-        if not self.full_name and self.first_name and self.last_name:
-            self.full_name = f"{self.first_name} {self.last_name}"
+        if self.first_name and self.last_name:
+            derived = f"{self.first_name} {self.last_name}"
+            if not self.full_name or self.full_name == derived:
+                self.full_name = derived
 
         super().save(*args, **kwargs)
 
