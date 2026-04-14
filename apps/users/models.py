@@ -1,9 +1,11 @@
+from django.conf import settings
 from django.db import models
 from django.core.validators import (
     RegexValidator,
     MinLengthValidator,
 )
 from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.utils import timezone
 
 NAME_REGEX = r"^[a-zA-ZÀ-ÿ'\- ]+$"
 NAME_REGEX_MESSAGE = "Only letters, hyphens, apostrophes, and spaces are allowed."
@@ -112,6 +114,12 @@ class AuthUser(AbstractUser):
         help_text="URL to the user's profile picture (typically from Google OAuth or uploaded to CDN).",
     )
 
+    # ── Two-Factor Authentication ────────────────────────────────────────────
+    # totp_secret is generated during setup and stored until 2FA is disabled.
+    # Store encrypted at rest in production (e.g. via django-encrypted-fields).
+    totp_secret = models.CharField(max_length=64, blank=True, default="")
+    totp_enabled = models.BooleanField(default=False)
+
     USERNAME_FIELD = "username"
     REQUIRED_FIELDS = ["email"]
 
@@ -146,3 +154,35 @@ class AuthUser(AbstractUser):
         if self.first_name and self.last_name:
             return f"{self.first_name} {self.last_name}"
         return self.username
+
+
+class UserSession(models.Model):
+    """
+    Tracks active JWT refresh token sessions per user.
+    One record per login; updated on every token refresh.
+    Revoking a session blacklists the corresponding refresh token.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="user_sessions",
+    )
+    jti = models.CharField(
+        max_length=255,
+        unique=True,
+        help_text="JWT ID of the current refresh token for this session.",
+    )
+    device = models.CharField(max_length=200, blank=True)
+    browser = models.CharField(max_length=200, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_active = models.DateTimeField(default=timezone.now)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "user_session"
+        ordering = ["-last_active"]
+
+    def __str__(self):
+        return f"{self.user} — {self.browser} ({self.ip_address})"

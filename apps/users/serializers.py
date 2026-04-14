@@ -1,3 +1,5 @@
+import pyotp
+
 from dj_rest_auth.serializers import UserDetailsSerializer
 from dj_rest_auth.registration.serializers import RegisterSerializer
 from rest_framework import serializers
@@ -5,8 +7,12 @@ from allauth.account.adapter import get_adapter
 from allauth.account.utils import setup_user_email
 from django.contrib.auth import get_user_model
 
+from .models import UserSession
+
 User = get_user_model()
 
+
+# ── Registration ─────────────────────────────────────────────────────────────
 
 class CustomRegisterSerializer(RegisterSerializer):
     """
@@ -56,10 +62,12 @@ class CustomRegisterSerializer(RegisterSerializer):
         return user
 
 
+# ── User profile ─────────────────────────────────────────────────────────────
+
 class CustomUserDetailsSerializer(UserDetailsSerializer):
     """
-    Extends dj-rest-auth's UserDetailsSerializer to return all
-    AuthUser fields on login, registration, and GET /auth/user/.
+    Returned on login, registration, and GET/PATCH /auth/user/.
+    Only first_name, last_name, and full_name are writable.
     """
 
     class Meta(UserDetailsSerializer.Meta):
@@ -81,7 +89,60 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
         read_only_fields = (
             "id",
             "email",
+            "username",
+            "profile_picture",
             "email_verified",
+            "is_staff",
+            "is_active",
             "date_joined",
             "last_login",
         )
+
+
+# ── Sessions ─────────────────────────────────────────────────────────────────
+
+class UserSessionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserSession
+        fields = ("id", "device", "browser", "ip_address", "created_at", "last_active")
+        read_only_fields = fields
+
+
+# ── 2FA ──────────────────────────────────────────────────────────────────────
+
+class TOTPEnableSerializer(serializers.Serializer):
+    code = serializers.CharField(min_length=6, max_length=6)
+
+    def validate_code(self, value):
+        user = self.context["request"].user
+        if user.totp_enabled:
+            raise serializers.ValidationError("2FA is already enabled.")
+        if not user.totp_secret:
+            raise serializers.ValidationError(
+                "Run GET /auth/2fa/setup/ first to generate a secret."
+            )
+        totp = pyotp.TOTP(user.totp_secret)
+        if not totp.verify(value, valid_window=1):
+            raise serializers.ValidationError("Invalid or expired code.")
+        return value
+
+
+class TOTPDisableSerializer(serializers.Serializer):
+    code = serializers.CharField(min_length=6, max_length=6)
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        user = self.context["request"].user
+        if not user.totp_enabled:
+            raise serializers.ValidationError("2FA is not enabled on this account.")
+        if not user.check_password(data["password"]):
+            raise serializers.ValidationError({"password": "Incorrect password."})
+        totp = pyotp.TOTP(user.totp_secret)
+        if not totp.verify(data["code"], valid_window=1):
+            raise serializers.ValidationError({"code": "Invalid or expired code."})
+        return data
+
+
+class TOTPVerifyLoginSerializer(serializers.Serializer):
+    totp_token = serializers.CharField()
+    code = serializers.CharField(min_length=6, max_length=6)

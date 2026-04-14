@@ -22,7 +22,7 @@ Authorization: Bearer <access_token>
 ## 🔐 Authentication Endpoints
 
 ### 1. Register New User
-Create a new account with email and password. A verification link is sent to the email — the user cannot log in until the link is clicked.
+Create a new account with email and password. A verification link is sent to the email — the user **cannot log in until the link is clicked**.
 
 - **Endpoint**: `POST /auth/registration/`
 - **Auth Required**: No
@@ -30,10 +30,12 @@ Create a new account with email and password. A verification link is sent to the
 ```json
 {
   "email": "user@example.com",
-  "password": "SecurePass123!"
+  "password": "SecurePass123!",
+  "first_name": "John",
+  "last_name": "Doe"
 }
 ```
-> Optionally include `"first_name"` and `"last_name"`.
+> `first_name` and `last_name` are optional. `username` is auto-generated from the email prefix.
 
 - **Response (201 Created)**:
 ```json
@@ -45,7 +47,7 @@ Create a new account with email and password. A verification link is sent to the
 ---
 
 ### 2. Verify Email
-Confirm the email address using the key from the verification link sent to the user's inbox. This must be completed before the user can log in.
+Confirm the email address using the key from the verification link sent to the user's inbox.
 
 - **Endpoint**: `POST /auth/registration/verify-email/`
 - **Auth Required**: No
@@ -63,10 +65,10 @@ Confirm the email address using the key from the verification link sent to the u
 ```
 
 > **Frontend flow:**
-> 1. User clicks link in email → lands on `http://localhost:3000/verify-email/MjA:1w3wGL:SkMWk8Po...`
-> 2. Frontend extracts the key from the **URL path** (everything after `/verify-email/`)
-> 3. Frontend calls `POST /api/v1/auth/registration/verify-email/` with `{"key": "<extracted_key>"}`
-> 4. On `200 OK` → redirect to `/dashboard` or `/login`
+> 1. User clicks the link in the email → lands on `http://localhost:3000/verify-email/MjA:1w3wGL:SkMWk8Po...`
+> 2. Extract the key from the **URL path** (everything after `/verify-email/`)
+> 3. `POST /api/v1/auth/registration/verify-email/` with `{ "key": "<extracted_key>" }`
+> 4. On `200 OK` → redirect to `/login`
 
 ---
 
@@ -91,7 +93,7 @@ Resend the verification link if the user didn't receive it or it expired (links 
 ---
 
 ### 4. Login
-Log in with **email and password**.
+Log in with **email and password**. The response differs depending on whether the user has 2FA enabled.
 
 - **Endpoint**: `POST /auth/login/`
 - **Auth Required**: No
@@ -103,6 +105,7 @@ Log in with **email and password**.
 }
 ```
 
+#### Case A — 2FA disabled (normal login)
 - **Response (200 OK)**:
 ```json
 {
@@ -124,6 +127,26 @@ Log in with **email and password**.
   }
 }
 ```
+> Store `access` and `refresh` tokens. Use `access` in every request header. Refresh it before it expires (60 min).
+
+#### Case B — 2FA enabled
+- **Response (200 OK)**:
+```json
+{
+  "requires_2fa": true,
+  "totp_token": "<short_lived_signed_token>"
+}
+```
+> **No JWT tokens are issued yet.** The `totp_token` expires in **5 minutes**.
+> Frontend must redirect to the 2FA code screen and call [`POST /auth/2fa/verify-login/`](#10-complete-login-with-2fa-code) to finish.
+
+> **Frontend flow for 2FA login:**
+> 1. `POST /auth/login/` → check if `requires_2fa === true`
+> 2. If yes → store `totp_token` in component state (not localStorage)
+> 3. Show a 6-digit code input screen
+> 4. User opens Google Authenticator, enters the code
+> 5. `POST /auth/2fa/verify-login/` with `{ totp_token, code }` → receive JWT tokens
+> 6. If `totp_token` expires → send user back to login
 
 ---
 
@@ -138,11 +161,17 @@ Invalidate the current session by blacklisting the refresh token.
   "refresh": "<refresh_token>"
 }
 ```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "Successfully logged out."
+}
+```
 
 ---
 
 ### 6. Get Current User
-Retrieve detailed profile information for the authenticated user.
+Retrieve profile information for the authenticated user.
 
 - **Endpoint**: `GET /auth/user/`
 - **Auth Required**: Yes
@@ -166,38 +195,342 @@ Retrieve detailed profile information for the authenticated user.
 
 ---
 
-### 7. Update Profile (Partial)
-Update specific fields of your profile.
+### 7. Update Profile
+Update your display name. Only these three fields are writable — all others are read-only and will be silently ignored if sent.
 
 - **Endpoint**: `PATCH /auth/user/`
+- **Auth Required**: Yes
+
+| Field | Writable | Notes |
+|---|---|---|
+| `first_name` | ✅ Yes | Letters, hyphens, apostrophes only |
+| `last_name` | ✅ Yes | Letters, hyphens, apostrophes only |
+| `full_name` | ✅ Yes | Auto-derived from first+last if left blank |
+| `email` | ❌ Read-only | Cannot be changed via this endpoint |
+| `username` | ❌ Read-only | Auto-generated, not user-editable |
+| `profile_picture` | ❌ Read-only | Set via Google OAuth only |
+
+- **Request Body** *(send only the fields you want to change)*:
+```json
+{
+  "first_name": "Jonathan",
+  "last_name": "Doe"
+}
+```
+- **Response (200 OK)**: Full user object (same shape as GET /auth/user/).
+
+---
+
+### 8. Change Password
+Change password while authenticated. The user stays logged in after this.
+
+- **Endpoint**: `POST /auth/password/change/`
 - **Auth Required**: Yes
 - **Request Body**:
 ```json
 {
-  "first_name": "John",
-  "email": "john@example.com"
+  "new_password1": "NewSecurePass456!",
+  "new_password2": "NewSecurePass456!"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "New password has been saved."
 }
 ```
 
 ---
 
+### 9. Password Reset (Forgot Password)
+Send a password reset link to the user's email.
+
+**Step 1 — Request reset email**
+- **Endpoint**: `POST /auth/password/reset/`
+- **Auth Required**: No
+- **Request Body**:
+```json
+{
+  "email": "user@example.com"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "Password reset e-mail has been sent."
+}
+```
+
+**Step 2 — Confirm new password**
+- **Endpoint**: `POST /auth/password/reset/confirm/`
+- **Auth Required**: No
+- **Request Body**:
+```json
+{
+  "uid": "<uid_from_reset_link>",
+  "token": "<token_from_reset_link>",
+  "new_password1": "NewSecurePass456!",
+  "new_password2": "NewSecurePass456!"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "Password has been reset with the new password."
+}
+```
+
+> **Frontend flow:**
+> 1. User submits their email on the "Forgot Password" page → `POST /auth/password/reset/`
+> 2. User receives email with a link like `http://localhost:3000/reset-password/<uid>/<token>/`
+> 3. Frontend extracts `uid` and `token` from the URL
+> 4. User types a new password → `POST /auth/password/reset/confirm/` with `uid`, `token`, and both password fields
+> 5. On `200 OK` → redirect to `/login`
+
+---
+
 ## 🔑 JWT Token Management
 
-### 8. Refresh Access Token
-Exchange a refresh token for a new access token. A new refresh token is also returned (rotation enabled).
+### 10. Refresh Access Token
+Exchange a refresh token for a new access token. A new refresh token is also returned (rotation enabled). The active session record is updated automatically.
 
 - **Endpoint**: `POST /auth/token/refresh/`
 - **Auth Required**: No
-- **Request Body**: `{"refresh": "<refresh_token>"}`
-- **Response (200 OK)**: `{"access": "<new_access_token>", "refresh": "<new_refresh_token>"}`
+- **Request Body**:
+```json
+{
+  "refresh": "<refresh_token>"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "access": "<new_access_token>",
+  "refresh": "<new_refresh_token>"
+}
+```
+> Always replace both stored tokens when this endpoint responds. The old refresh token is immediately invalidated.
 
-### 9. Verify Token
+### 11. Verify Token
 Check if an access or refresh token is still valid.
 
 - **Endpoint**: `POST /auth/token/verify/`
 - **Auth Required**: No
-- **Request Body**: `{"token": "<token>"}`
-- **Response (200 OK)**: `{}` *(empty = valid)*
+- **Request Body**: `{ "token": "<token>" }`
+- **Response (200 OK)**: `{}` *(empty body = valid)*
+- **Response (401)**: Token is expired or invalid.
+
+---
+
+## 🔒 Two-Factor Authentication (TOTP)
+
+All 2FA endpoints require the user to be **logged in** (JWT Bearer token), except `verify-login` which is used before tokens are issued.
+
+### 12. Setup 2FA — Get QR Code
+Generates a new TOTP secret and returns the `otpauth://` URI for rendering a QR code. This does **not** enable 2FA yet — the user must scan and confirm first.
+
+- **Endpoint**: `GET /auth/2fa/setup/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+{
+  "secret": "JBSWY3DPEHPK3PXP",
+  "otpauth_uri": "otpauth://totp/PyAnalypt:user@example.com?secret=JBSWY3DPEHPK3PXP&issuer=PyAnalypt"
+}
+```
+
+> **Frontend flow:**
+> 1. Call `GET /auth/2fa/setup/`
+> 2. Render `otpauth_uri` as a QR code using a library like [`qrcode.react`](https://www.npmjs.com/package/qrcode.react)
+> 3. Also show the raw `secret` as a fallback for manual entry in Google Authenticator
+> 4. Prompt user to scan and enter their first code to confirm → `POST /auth/2fa/enable/`
+
+---
+
+### 13. Enable 2FA
+Activates 2FA by verifying the first TOTP code from the authenticator app. Must be called after `GET /auth/2fa/setup/`.
+
+- **Endpoint**: `POST /auth/2fa/enable/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "code": "123456"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "2FA enabled successfully."
+}
+```
+- **Response (400)** if code is wrong:
+```json
+{
+  "code": ["Invalid or expired code."]
+}
+```
+
+---
+
+### 14. Disable 2FA
+Turns off 2FA. Requires both the current password and a valid TOTP code to confirm intent.
+
+- **Endpoint**: `POST /auth/2fa/disable/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "code": "123456",
+  "password": "CurrentPassword123!"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "2FA disabled successfully."
+}
+```
+
+---
+
+### 15. Complete Login with 2FA Code
+Finishes a login that was paused by the 2FA gate. Receives the same JWT response as a normal login.
+
+- **Endpoint**: `POST /auth/2fa/verify-login/`
+- **Auth Required**: No *(user is not authenticated yet at this point)*
+- **Request Body**:
+```json
+{
+  "totp_token": "<token_from_login_response>",
+  "code": "123456"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "access": "<access_token>",
+  "refresh": "<refresh_token>",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "username": "user",
+    "first_name": "John",
+    "last_name": "Doe",
+    "full_name": "John Doe",
+    "profile_picture": null,
+    "email_verified": true,
+    "is_staff": false,
+    "is_active": true,
+    "date_joined": "2026-03-21T00:00:00Z",
+    "last_login": "2026-03-21T06:00:00Z"
+  }
+}
+```
+- **Response (400)** if `totp_token` expired (> 5 minutes):
+```json
+{
+  "detail": "Token expired, please log in again."
+}
+```
+
+---
+
+## 📱 Session Management
+
+Each login creates a session record that tracks the device, browser, and IP address. Sessions are tied to refresh tokens — revoking a session blacklists its token immediately.
+
+### Session Object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | int | Session identifier |
+| `device` | string | Device family (e.g. `"iPhone"`, `"Desktop"`) |
+| `browser` | string | Browser and OS (e.g. `"Chrome on Windows"`) |
+| `ip_address` | string | IP address at login |
+| `created_at` | datetime | When the session was created (login time) |
+| `last_active` | datetime | Last time the refresh token was used |
+
+---
+
+### 16. List Active Sessions
+Returns all active sessions for the current user.
+
+- **Endpoint**: `GET /auth/sessions/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+[
+  {
+    "id": 3,
+    "device": "Desktop",
+    "browser": "Chrome on Windows",
+    "ip_address": "192.168.1.10",
+    "created_at": "2026-04-14T08:00:00Z",
+    "last_active": "2026-04-14T09:30:00Z"
+  },
+  {
+    "id": 4,
+    "device": "iPhone",
+    "browser": "Mobile Safari on iOS",
+    "ip_address": "10.0.0.5",
+    "created_at": "2026-04-13T20:00:00Z",
+    "last_active": "2026-04-13T20:45:00Z"
+  }
+]
+```
+
+> **Frontend tip:** You can visually highlight the "current" session by comparing `ip_address` and `browser` against the user's current device. There is no explicit `is_current` flag — identify it by recency (`last_active`) or matching UA.
+
+---
+
+### 17. Revoke a Specific Session
+Blacklists the refresh token for that session, forcing that device to log in again.
+
+- **Endpoint**: `DELETE /auth/sessions/{id}/`
+- **Auth Required**: Yes
+- **Response (204 No Content)**: *(empty — success)*
+- **Response (404)**: Session not found or doesn't belong to the current user.
+
+---
+
+### 18. Revoke All Sessions (Logout Everywhere)
+Blacklists **all** active sessions for the current user, including the current one. The user will need to log in again on all devices.
+
+- **Endpoint**: `POST /auth/sessions/revoke-all/`
+- **Auth Required**: Yes
+- **Request Body**: *(empty)*
+- **Response (200 OK)**:
+```json
+{
+  "detail": "Revoked 3 session(s)."
+}
+```
+
+> **Frontend tip:** After calling this endpoint, immediately clear stored tokens and redirect to `/login`.
+
+---
+
+## 🌐 Google OAuth
+
+### 19. Google Login
+Exchange a Google OAuth `access_token` for PyAnalypt JWT tokens. New users are registered automatically.
+
+- **Endpoint**: `POST /auth/google/`
+- **Auth Required**: No
+- **Request Body**:
+```json
+{
+  "access_token": "<google_access_token>"
+}
+```
+- **Response (200 OK)**: Same shape as normal login (access + refresh + user).
+
+> **Frontend flow:**
+> 1. Trigger Google Sign-In using the Google Identity SDK
+> 2. On success, receive a Google `access_token`
+> 3. `POST /api/v1/auth/google/` with `{ "access_token": "<google_token>" }`
+> 4. Store the returned JWT tokens normally
 
 ---
 

@@ -18,3 +18,5 @@ dj-rest-auth
 django-allauth
 requests
 cryptography
+pyotp
+user-agents
