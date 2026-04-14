@@ -6,6 +6,7 @@ from rest_framework import serializers
 from allauth.account.adapter import get_adapter
 from allauth.account.utils import setup_user_email
 from django.contrib.auth import get_user_model
+from django.core.validators import RegexValidator
 
 from .models import UserSession
 
@@ -110,8 +111,11 @@ class UserSessionSerializer(serializers.ModelSerializer):
 
 # ── 2FA ──────────────────────────────────────────────────────────────────────
 
+_DIGITS_ONLY = RegexValidator(r'^\d{6}$', 'Code must be exactly 6 digits.')
+
+
 class TOTPEnableSerializer(serializers.Serializer):
-    code = serializers.CharField(min_length=6, max_length=6)
+    code = serializers.CharField(min_length=6, max_length=6, validators=[_DIGITS_ONLY])
 
     def validate_code(self, value):
         user = self.context["request"].user
@@ -128,7 +132,7 @@ class TOTPEnableSerializer(serializers.Serializer):
 
 
 class TOTPDisableSerializer(serializers.Serializer):
-    code = serializers.CharField(min_length=6, max_length=6)
+    code = serializers.CharField(min_length=6, max_length=6, validators=[_DIGITS_ONLY])
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
@@ -145,4 +149,4 @@ class TOTPDisableSerializer(serializers.Serializer):
 
 class TOTPVerifyLoginSerializer(serializers.Serializer):
     totp_token = serializers.CharField()
-    code = serializers.CharField(min_length=6, max_length=6)
+    code = serializers.CharField(min_length=6, max_length=6, validators=[_DIGITS_ONLY])

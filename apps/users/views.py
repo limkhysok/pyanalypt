@@ -1,3 +1,4 @@
+import logging
 import pyotp
 import user_agents
 
@@ -32,6 +33,7 @@ from .serializers import (
 )
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -57,6 +59,7 @@ def _create_session(request, user, refresh_token_str):
     try:
         jti = JWTRefreshToken(refresh_token_str)["jti"]
     except Exception:
+        logger.exception("Failed to extract JTI for session tracking (user=%s)", user.pk)
         return  # Never block login due to session-tracking failure
 
     device, browser = _parse_user_agent(request)
@@ -89,12 +92,27 @@ class GoogleLogin(SocialLoginView):
     Frontend should:
     1. Use Google Sign-In to get access_token
     2. Send access_token to this endpoint
-    3. Receive JWT tokens back
+    3. Receive JWT tokens back (or a totp_token if the account has 2FA enabled)
     """
 
     adapter_class = GoogleOAuth2Adapter
     callback_url = getattr(settings, "GOOGLE_OAUTH_CALLBACK_URL", None)
     client_class = OAuth2Client
+
+    def get_response(self):
+        # If the account has 2FA enabled, pause and require TOTP completion —
+        # same gate as the password login flow.
+        if self.user.totp_enabled:
+            totp_token = signing.dumps(
+                {"uid": self.user.pk, "purpose": "2fa-login"},
+                salt="2fa-login",
+            )
+            return Response(
+                {"requires_2fa": True, "totp_token": totp_token},
+                status=status.HTTP_202_ACCEPTED,
+            )
+        _create_session(self.request, self.user, str(self.refresh_token))
+        return super().get_response()
 
 
 # ── Custom login (adds 2FA gate + session tracking) ───────────────────────────
@@ -123,7 +141,7 @@ class CustomLoginView(LoginView):
             )
             return Response(
                 {"requires_2fa": True, "totp_token": totp_token},
-                status=status.HTTP_200_OK,
+                status=status.HTTP_202_ACCEPTED,
             )
 
         self.login()
@@ -156,7 +174,7 @@ class CustomTokenRefreshView(TokenRefreshView):
                     last_active=timezone.now(),
                 )
             except Exception:
-                pass
+                logger.exception("Failed to sync UserSession JTI after token rotation (old_jti=%s)", old_jti)
 
         return response
 
@@ -254,6 +272,12 @@ class TOTPVerifyLoginView(APIView):
         except User.DoesNotExist:
             return Response(
                 {"detail": "Invalid token."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not user.is_active:
+            return Response(
+                {"detail": "Account is disabled."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

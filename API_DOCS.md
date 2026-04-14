@@ -130,7 +130,7 @@ Log in with **email and password**. The response differs depending on whether th
 > Store `access` and `refresh` tokens. Use `access` in every request header. Refresh it before it expires (60 min).
 
 #### Case B — 2FA enabled
-- **Response (200 OK)**:
+- **Response (202 Accepted)**:
 ```json
 {
   "requires_2fa": true,
@@ -358,6 +358,7 @@ Activates 2FA by verifying the first TOTP code from the authenticator app. Must 
   "code": "123456"
 }
 ```
+> `code` must be exactly **6 digits** (e.g. `"123456"`). Non-digit characters are rejected.
 - **Response (200 OK)**:
 ```json
 {
@@ -385,6 +386,7 @@ Turns off 2FA. Requires both the current password and a valid TOTP code to confi
   "password": "CurrentPassword123!"
 }
 ```
+> `code` must be exactly **6 digits**. Non-digit characters are rejected.
 - **Response (200 OK)**:
 ```json
 {
@@ -406,6 +408,8 @@ Finishes a login that was paused by the 2FA gate. Receives the same JWT response
   "code": "123456"
 }
 ```
+> `code` must be exactly **6 digits**. `totp_token` comes from the `202 Accepted` response of `POST /auth/login/` or `POST /auth/google/`.
+
 - **Response (200 OK)**:
 ```json
 {
@@ -431,6 +435,12 @@ Finishes a login that was paused by the 2FA gate. Receives the same JWT response
 ```json
 {
   "detail": "Token expired, please log in again."
+}
+```
+- **Response (400)** if account has been deactivated:
+```json
+{
+  "detail": "Account is disabled."
 }
 ```
 
@@ -524,13 +534,26 @@ Exchange a Google OAuth `access_token` for PyAnalypt JWT tokens. New users are r
   "access_token": "<google_access_token>"
 }
 ```
+
+#### Case A — 2FA disabled (normal)
 - **Response (200 OK)**: Same shape as normal login (access + refresh + user).
+
+#### Case B — 2FA enabled on the account
+- **Response (202 Accepted)**:
+```json
+{
+  "requires_2fa": true,
+  "totp_token": "<short_lived_signed_token>"
+}
+```
+> JWT tokens are **not** issued yet. Pass `totp_token` to `POST /auth/2fa/verify-login/` with the TOTP code to complete login. The token expires in **5 minutes**.
 
 > **Frontend flow:**
 > 1. Trigger Google Sign-In using the Google Identity SDK
 > 2. On success, receive a Google `access_token`
 > 3. `POST /api/v1/auth/google/` with `{ "access_token": "<google_token>" }`
-> 4. Store the returned JWT tokens normally
+> 4. If `requires_2fa === true` → treat identically to the 2FA branch of `POST /auth/login/` (show code screen, call `POST /auth/2fa/verify-login/`)
+> 5. Otherwise, store the returned JWT tokens normally
 
 ---
 
@@ -874,6 +897,7 @@ Get aggregated issue counts for a dataset, grouped by type and column.
 |------|---------|-------------|
 | 200 | OK | Request successful |
 | 201 | Created | User created successfully |
+| 202 | Accepted | Credentials valid but action pending — 2FA code required to complete login |
 | 400 | Bad Request | Validation error or missing fields |
 | 401 | Unauthorized | Invalid or expired token |
 | 403 | Forbidden | Permissions mapping error |

@@ -101,14 +101,17 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
         """
         Save a newly created user via social login.
         """
-        try:
-            user = super().save_user(request, sociallogin, form)
-        except IntegrityError:
-            # Username collision under concurrent signup — retry with a new one
-            sociallogin.user.username = _generate_unique_username(
-                sociallogin.user.email
-            )
-            user = super().save_user(request, sociallogin, form)
+        for attempt in range(3):
+            try:
+                user = super().save_user(request, sociallogin, form)
+                break
+            except IntegrityError:
+                if attempt == 2:
+                    raise
+                # Username collision under concurrent signup — retry with a new one
+                sociallogin.user.username = _generate_unique_username(
+                    sociallogin.user.email
+                )
 
         if sociallogin.account.provider == "google":
             from allauth.account.models import EmailAddress
@@ -160,11 +163,14 @@ class CustomAccountAdapter(DefaultAccountAdapter):
             user.username = _generate_unique_username(user.email)
 
         if commit:
-            try:
-                user.save()
-            except IntegrityError:
-                # Username collision under concurrent signup — retry with a new one
-                user.username = _generate_unique_username(user.email)
-                user.save()
+            for attempt in range(3):
+                try:
+                    user.save()
+                    break
+                except IntegrityError:
+                    if attempt == 2:
+                        raise
+                    # Username collision under concurrent signup — retry with a new one
+                    user.username = _generate_unique_username(user.email)
 
         return user
