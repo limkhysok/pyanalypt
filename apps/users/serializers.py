@@ -7,10 +7,6 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-def _email_already_exists(email):
-    """Return True if a user with this email already exists (verified or not)."""
-    return User.objects.filter(email__iexact=email).exists()
-
 
 class CustomRegisterSerializer(RegisterSerializer):
     """
@@ -28,15 +24,12 @@ class CustomRegisterSerializer(RegisterSerializer):
 
     def validate_email(self, email):
         email = get_adapter().clean_email(email)
-        if _email_already_exists(email):
+        if User.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError("A user with this email already exists.")
         return email
 
     def validate_password(self, value):
         return get_adapter().clean_password(value)
-
-    def validate(self, data):
-        return data
 
     def get_cleaned_data(self):
         return {

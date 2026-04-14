@@ -46,16 +46,13 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
             return
 
         if sociallogin.account.provider == "google":
-            try:
-                email = sociallogin.account.extra_data.get("email")
-                if email:
-                    try:
-                        user = User.objects.get(email=email)
-                        sociallogin.connect(request, user)
-                    except User.DoesNotExist:
-                        pass
-            except Exception as e:
-                logger.warning("pre_social_login email match failed: %s", e)
+            email = sociallogin.account.extra_data.get("email")
+            if email:
+                try:
+                    user = User.objects.get(email=email)
+                    sociallogin.connect(request, user)
+                except User.DoesNotExist:
+                    pass
 
     def populate_user(self, request, sociallogin, data):
         """

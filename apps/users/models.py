@@ -2,9 +2,7 @@ from django.db import models
 from django.core.validators import (
     RegexValidator,
     MinLengthValidator,
-    MaxLengthValidator,
 )
-from django.utils import timezone
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 
 NAME_REGEX = r"^[a-zA-ZÀ-ÿ'\- ]+$"
@@ -80,7 +78,6 @@ class AuthUser(AbstractUser):
         validators=[
             RegexValidator(regex=NAME_REGEX, message=NAME_REGEX_MESSAGE),
             MinLengthValidator(2, message="Full name must be at least 2 characters long."),
-            MaxLengthValidator(255),
         ],
     )
 
@@ -100,32 +97,6 @@ class AuthUser(AbstractUser):
     email_verified = models.BooleanField(
         default=False,
         help_text="Indicates whether the user's email has been verified.",
-    )
-
-    is_superuser = models.BooleanField(
-        default=False,
-        help_text="Designates that this user has all permissions without explicitly assigning them.",
-    )
-
-    is_staff = models.BooleanField(
-        default=False,
-        help_text="Designates whether the user can log into the admin site.",
-    )
-
-    is_active = models.BooleanField(
-        default=True,
-        help_text="Designates whether this user account should be treated as active. Unselect this instead of deleting accounts.",
-    )
-
-    date_joined = models.DateTimeField(
-        default=timezone.now,
-        help_text="Date and time when the user account was created.",
-    )
-
-    last_login = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="Date and time of the user's last successful login.",
     )
 
     profile_picture = models.URLField(
@@ -160,6 +131,8 @@ class AuthUser(AbstractUser):
 
         if self.first_name and self.last_name:
             derived = f"{self.first_name} {self.last_name}"
+            # Only auto-derive full_name when it is blank or still matches the
+            # previously derived value; a manually set full_name is left intact.
             if not self.full_name or self.full_name == derived:
                 self.full_name = derived
 
