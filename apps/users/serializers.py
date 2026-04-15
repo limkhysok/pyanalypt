@@ -24,7 +24,13 @@ class InitialRegisterSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         normalized = value.strip().lower()
-        if User.objects.filter(email__iexact=normalized).exists():
+        existing = User.objects.filter(email__iexact=normalized).first()
+        if existing:
+            if not existing.email_verified and not existing.is_active:
+                raise serializers.ValidationError(
+                    "An unverified account already exists with this email. "
+                    "Please check your inbox or use the resend-otp endpoint to get a new code."
+                )
             raise serializers.ValidationError("A user with this email already exists.")
         return normalized
 
@@ -102,7 +108,7 @@ class RegistrationOTPVerifySerializer(serializers.Serializer):
 class CustomUserDetailsSerializer(UserDetailsSerializer):
     """
     Returned on login, registration, and GET/PATCH /auth/user/.
-    Only first_name, last_name, and full_name are writable.
+    Only full_name and birthday are writable — all other fields are read-only.
     """
 
     class Meta(UserDetailsSerializer.Meta):

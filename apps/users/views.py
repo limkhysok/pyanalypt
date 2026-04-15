@@ -17,6 +17,7 @@ from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
@@ -93,16 +94,32 @@ def _revoke_session(session):
     session.save(update_fields=["is_active"])
 
 
+# ── Throttles ─────────────────────────────────────────────────────────────────
+
+class RegistrationThrottle(AnonRateThrottle):
+    scope = "registration"
+
+class OtpVerifyThrottle(AnonRateThrottle):
+    scope = "otp_verify"
+
+class OtpResendThrottle(AnonRateThrottle):
+    scope = "otp_resend"
+
+class LoginThrottle(AnonRateThrottle):
+    scope = "login"
+
+
 # ── Registration ─────────────────────────────────────────────────────────────
 
 class CustomRegisterView(APIView):
     """
     POST /auth/registration/
-    Step 1: Validates email and password, creates an inactive user with a 
+    Step 1: Validates email and password, creates an inactive user with a
     temporary username, and sends a 6-digit OTP.
     """
 
     permission_classes = [AllowAny]
+    throttle_classes = [RegistrationThrottle]
 
     def post(self, request):
         serializer = InitialRegisterSerializer(data=request.data)
@@ -163,6 +180,7 @@ class RegistrationOTPVerifyView(APIView):
     """
 
     permission_classes = [AllowAny]
+    throttle_classes = [OtpVerifyThrottle]
 
     def post(self, request):
         serializer = RegistrationOTPVerifySerializer(data=request.data)
@@ -226,6 +244,7 @@ class ResendOTPView(APIView):
     """
 
     permission_classes = [AllowAny]
+    throttle_classes = [OtpResendThrottle]
 
     def post(self, request):
         serializer = ResendOTPSerializer(data=request.data)
@@ -340,8 +359,33 @@ class CustomLoginView(LoginView):
     - Create a UserSession record on every successful full login.
     """
 
-    def post(self, request, *args, **kwargs):
+    throttle_classes = [LoginThrottle]
+
+    def post(self, request):
         self.request = request
+
+        # Pre-check: Django's auth backend rejects is_active=False users before
+        # our email_verified check can run. Detect unverified accounts here so
+        # the frontend receives requires_verification instead of a generic error.
+        email = request.data.get("email", "").strip().lower()
+        if email:
+            try:
+                pending = User.objects.get(
+                    email__iexact=email,
+                    is_active=False,
+                    email_verified=False,
+                )
+                return Response(
+                    {
+                        "detail": "Email address not verified.",
+                        "requires_verification": True,
+                        "email": pending.email,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            except User.DoesNotExist:
+                pass
+
         self.serializer = self.get_serializer(data=request.data)
         self.serializer.is_valid(raise_exception=True)
 
@@ -421,6 +465,8 @@ class TOTPSetupView(APIView):
     The secret is saved to the user but 2FA is NOT enabled until /auth/2fa/enable/.
     """
 
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         user = request.user
         if user.totp_enabled:
@@ -443,6 +489,8 @@ class TOTPEnableView(APIView):
     Verifies the TOTP code against the stored secret and activates 2FA.
     """
 
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         serializer = TOTPEnableSerializer(
             data=request.data, context={"request": request}
@@ -458,6 +506,8 @@ class TOTPDisableView(APIView):
     POST /auth/2fa/disable/   { "code": "123456", "password": "..." }
     Disables 2FA after verifying both the current password and a valid TOTP code.
     """
+
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         serializer = TOTPDisableSerializer(
@@ -555,6 +605,8 @@ class UserSessionListView(generics.ListAPIView):
 class UserSessionRevokeView(APIView):
     """DELETE /auth/sessions/{id}/  — revoke a specific session."""
 
+    permission_classes = [IsAuthenticated]
+
     def delete(self, request, pk):
         session = get_object_or_404(
             UserSession, pk=pk, user=request.user, is_active=True
@@ -568,6 +620,8 @@ class UserSessionRevokeAllView(APIView):
     POST /auth/sessions/revoke-all/
     Revokes ALL active sessions for the current user (forces logout everywhere).
     """
+
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         sessions = list(UserSession.objects.filter(user=request.user, is_active=True))

@@ -210,6 +210,15 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",  # Lock down by default
     ),
     "URL_FORMAT_OVERRIDE": None,  # Free up ?format= for our export endpoint
+    # Throttle rates — applied per-view, not globally.
+    # Uses the configured CACHES backend (locmem in dev, Redis in prod).
+    "DEFAULT_THROTTLE_CLASSES": [],
+    "DEFAULT_THROTTLE_RATES": {
+        "otp_resend":   "5/hour",   # ResendOTPView
+        "otp_verify":   "10/hour",  # RegistrationOTPVerifyView
+        "registration": "10/hour",  # CustomRegisterView
+        "login":        "20/hour",  # CustomLoginView (brute-force protection)
+    },
 }
 
 

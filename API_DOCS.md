@@ -81,21 +81,26 @@ Activate the account and verify the email address. On success, JWT tokens are is
 {
   "access": "<access_token>",
   "refresh": "<refresh_token>",
+  "requires_profile_completion": true,
   "user": {
     "id": 1,
     "email": "user@example.com",
     "username": "user_1234567890",
     "full_name": "",
     "birthday": null,
+    "profile_picture": null,
     "email_verified": true,
-    "is_active": true
+    "is_staff": false,
+    "is_active": true,
+    "date_joined": "2026-03-21T00:00:00Z",
+    "last_login": "2026-03-21T06:00:00Z"
   }
 }
 ```
 
 ---
 
-### 3. Complete Profile (Step 3)
+### 4. Complete Profile (Step 3)
 Finalize the registration by setting a unique username, full name, and birthday.
 
 - **Endpoint**: `POST /auth/registration/complete-profile/`
@@ -135,7 +140,7 @@ Finalize the registration by setting a unique username, full name, and birthday.
 
 ---
 
-### 4. Login
+### 5. Login
 Log in with **email and password**. The response differs depending on whether the user has 2FA enabled.
 
 - **Endpoint**: `POST /auth/login/`
@@ -192,7 +197,7 @@ Log in with **email and password**. The response differs depending on whether th
 
 ---
 
-### 5. Logout
+### 6. Logout
 Invalidate the current session by blacklisting the refresh token.
 
 - **Endpoint**: `POST /auth/logout/`
@@ -212,7 +217,7 @@ Invalidate the current session by blacklisting the refresh token.
 
 ---
 
-### 6. Get Current User
+### 7. Get Current User
 Retrieve profile information for the authenticated user.
 
 - **Endpoint**: `GET /auth/user/`
@@ -222,10 +227,9 @@ Retrieve profile information for the authenticated user.
 {
   "id": 1,
   "email": "user@example.com",
-  "username": "user",
-  "first_name": "John",
-  "last_name": "Doe",
+  "username": "johndoe",
   "full_name": "John Doe",
+  "birthday": "1995-05-20",
   "profile_picture": null,
   "email_verified": true,
   "is_staff": false,
@@ -237,33 +241,31 @@ Retrieve profile information for the authenticated user.
 
 ---
 
-### 7. Update Profile
-Update your display name. Only these three fields are writable — all others are read-only and will be silently ignored if sent.
+### 8. Update Profile
+Update your profile name. Only these two fields are writable — all others are read-only and will be silently ignored if sent.
 
 - **Endpoint**: `PATCH /auth/user/`
 - **Auth Required**: Yes
 
 | Field | Writable | Notes |
 |---|---|---|
-| `first_name` | ✅ Yes | Letters, hyphens, apostrophes only |
-| `last_name` | ✅ Yes | Letters, hyphens, apostrophes only |
-| `full_name` | ✅ Yes | Auto-derived from first+last if left blank |
+| `full_name` | ✅ Yes | Letters, hyphens, apostrophes, and spaces only |
+| `birthday` | ✅ Yes | Date in YYYY-MM-DD format |
 | `email` | ❌ Read-only | Cannot be changed via this endpoint |
-| `username` | ❌ Read-only | Auto-generated, not user-editable |
+| `username` | ❌ Read-only | Set during profile completion, not editable after |
 | `profile_picture` | ❌ Read-only | Set via Google OAuth only |
 
 - **Request Body** *(send only the fields you want to change)*:
 ```json
 {
-  "first_name": "Jonathan",
-  "last_name": "Doe"
+  "full_name": "Jonathan Doe"
 }
 ```
 - **Response (200 OK)**: Full user object (same shape as GET /auth/user/).
 
 ---
 
-### 8. Change Password
+### 9. Change Password
 Change password while authenticated. The user stays logged in after this.
 
 - **Endpoint**: `POST /auth/password/change/`
@@ -284,7 +286,7 @@ Change password while authenticated. The user stays logged in after this.
 
 ---
 
-### 9. Password Reset (Forgot Password)
+### 10. Password Reset (Forgot Password)
 Send a password reset link to the user's email.
 
 **Step 1 — Request reset email**
@@ -333,7 +335,7 @@ Send a password reset link to the user's email.
 
 ## 🔑 JWT Token Management
 
-### 10. Refresh Access Token
+### 11. Refresh Access Token
 Exchange a refresh token for a new access token. A new refresh token is also returned (rotation enabled). The active session record is updated automatically.
 
 - **Endpoint**: `POST /auth/token/refresh/`
@@ -353,7 +355,7 @@ Exchange a refresh token for a new access token. A new refresh token is also ret
 ```
 > Always replace both stored tokens when this endpoint responds. The old refresh token is immediately invalidated.
 
-### 11. Verify Token
+### 12. Verify Token
 Check if an access or refresh token is still valid.
 
 - **Endpoint**: `POST /auth/token/verify/`
@@ -368,7 +370,7 @@ Check if an access or refresh token is still valid.
 
 All 2FA endpoints require the user to be **logged in** (JWT Bearer token), except `verify-login` which is used before tokens are issued.
 
-### 12. Setup 2FA — Get QR Code
+### 13. Setup 2FA — Get QR Code
 Generates a new TOTP secret and returns the `otpauth://` URI for rendering a QR code. This does **not** enable 2FA yet — the user must scan and confirm first.
 
 - **Endpoint**: `GET /auth/2fa/setup/`
@@ -389,7 +391,7 @@ Generates a new TOTP secret and returns the `otpauth://` URI for rendering a QR 
 
 ---
 
-### 13. Enable 2FA
+### 14. Enable 2FA
 Activates 2FA by verifying the first TOTP code from the authenticator app. Must be called after `GET /auth/2fa/setup/`.
 
 - **Endpoint**: `POST /auth/2fa/enable/`
@@ -416,7 +418,7 @@ Activates 2FA by verifying the first TOTP code from the authenticator app. Must 
 
 ---
 
-### 14. Disable 2FA
+### 15. Disable 2FA
 Turns off 2FA. Requires both the current password and a valid TOTP code to confirm intent.
 
 - **Endpoint**: `POST /auth/2fa/disable/`
@@ -438,7 +440,7 @@ Turns off 2FA. Requires both the current password and a valid TOTP code to confi
 
 ---
 
-### 15. Complete Login with 2FA Code
+### 16. Complete Login with 2FA Code
 Finishes a login that was paused by the 2FA gate. Receives the same JWT response as a normal login.
 
 - **Endpoint**: `POST /auth/2fa/verify-login/`
@@ -460,10 +462,9 @@ Finishes a login that was paused by the 2FA gate. Receives the same JWT response
   "user": {
     "id": 1,
     "email": "user@example.com",
-    "username": "user",
-    "first_name": "John",
-    "last_name": "Doe",
+    "username": "johndoe",
     "full_name": "John Doe",
+    "birthday": "1995-05-20",
     "profile_picture": null,
     "email_verified": true,
     "is_staff": false,
@@ -505,7 +506,7 @@ Each login creates a session record that tracks the device, browser, and IP addr
 
 ---
 
-### 16. List Active Sessions
+### 17. List Active Sessions
 Returns all active sessions for the current user.
 
 - **Endpoint**: `GET /auth/sessions/`
@@ -536,7 +537,7 @@ Returns all active sessions for the current user.
 
 ---
 
-### 17. Revoke a Specific Session
+### 18. Revoke a Specific Session
 Blacklists the refresh token for that session, forcing that device to log in again.
 
 - **Endpoint**: `DELETE /auth/sessions/{id}/`
@@ -546,7 +547,7 @@ Blacklists the refresh token for that session, forcing that device to log in aga
 
 ---
 
-### 18. Revoke All Sessions (Logout Everywhere)
+### 19. Revoke All Sessions (Logout Everywhere)
 Blacklists **all** active sessions for the current user, including the current one. The user will need to log in again on all devices.
 
 - **Endpoint**: `POST /auth/sessions/revoke-all/`
@@ -565,7 +566,7 @@ Blacklists **all** active sessions for the current user, including the current o
 
 ## 🌐 Google OAuth
 
-### 19. Google Login
+### 20. Google Login
 Exchange a Google OAuth `access_token` for PyAnalypt JWT tokens. New users are registered automatically.
 
 - **Endpoint**: `POST /auth/google/`
