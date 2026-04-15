@@ -1,10 +1,16 @@
 import logging
 import pyotp
+import random
 import user_agents
+import uuid
+
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import signing
+from django.core.mail import send_mail
+from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
@@ -23,9 +29,13 @@ from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
 from allauth.socialaccount.providers.oauth2.client import OAuth2Client
 from dj_rest_auth.registration.views import SocialLoginView
 
-from .models import UserSession
+from .models import UserSession, EmailVerificationOTP
 from .serializers import (
     CustomUserDetailsSerializer,
+    InitialRegisterSerializer,
+    RegistrationOTPVerifySerializer,
+    CompleteProfileSerializer,
+    ResendOTPSerializer,
     UserSessionSerializer,
     TOTPEnableSerializer,
     TOTPDisableSerializer,
@@ -83,6 +93,204 @@ def _revoke_session(session):
     session.save(update_fields=["is_active"])
 
 
+# ── Registration ─────────────────────────────────────────────────────────────
+
+class CustomRegisterView(APIView):
+    """
+    POST /auth/registration/
+    Step 1: Validates email and password, creates an inactive user with a 
+    temporary username, and sends a 6-digit OTP.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = InitialRegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            # Create user with a temporary username based on a UUID fragment
+            temp_username = f"user_{uuid.uuid4().hex[:10]}"
+            user = User.objects.create_user(
+                username=temp_username,
+                email=data["email"],
+                password=data["password"],
+                is_active=False,
+            )
+        except IntegrityError:
+            return Response(
+                {"detail": "A user with this email already exists."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        otp_code = f"{random.SystemRandom().randint(0, 999999):06d}"
+        EmailVerificationOTP.objects.update_or_create(
+            user=user,
+            defaults={
+                "otp": otp_code,
+                "expires_at": timezone.now() + timedelta(minutes=10),
+            },
+        )
+
+        try:
+            send_mail(
+                subject="Your PyAnalypt verification code",
+                message=(
+                    f"Hello,\n\n"
+                    f"Your verification code is: {otp_code}\n\n"
+                    f"This code expires in 10 minutes.\n\n"
+                    f"Please use this code to verify your email and continue your registration."
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+        except Exception:
+            logger.exception("Failed to send OTP email to %s", user.email)
+
+        return Response(
+            {"detail": "Initial registration successful. Please check your email for the 6-digit verification code."},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class RegistrationOTPVerifyView(APIView):
+    """
+    POST /auth/registration/verify-otp/
+    Step 2: Verifies the OTP, activates the user, and returns JWT tokens.
+    User is now 'authenticated' but may still need to complete their profile.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = RegistrationOTPVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"]
+        otp_code = serializer.validated_data["otp"]
+
+        _invalid = Response(
+            {"detail": "Invalid email or OTP."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return _invalid
+
+        if user.email_verified:
+            return Response(
+                {"detail": "This email is already verified."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            otp_record = EmailVerificationOTP.objects.get(user=user)
+        except EmailVerificationOTP.DoesNotExist:
+            return _invalid
+
+        if otp_record.is_expired():
+            otp_record.delete()
+            return Response(
+                {"detail": "OTP has expired. Please request a new code."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if otp_record.otp != otp_code:
+            return _invalid
+
+        user.is_active = True
+        user.email_verified = True
+        user.save(update_fields=["is_active", "email_verified"])
+        otp_record.delete()
+
+        refresh = JWTRefreshToken.for_user(user)
+        refresh_str = str(refresh)
+        _create_session(request, user, refresh_str)
+
+        return Response({
+            "access": str(refresh.access_token),
+            "refresh": refresh_str,
+            "requires_profile_completion": True,
+            "user": CustomUserDetailsSerializer(user, context={"request": request}).data,
+        })
+
+
+class ResendOTPView(APIView):
+    """
+    POST /auth/registration/resend-otp/
+    Regenerates and resends the verification OTP for a pending user.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = ResendOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            # Silent failure or generic success message to prevent enumeration
+            return Response({"detail": "If an account exists with this email, a new code has been sent."})
+
+        if user.email_verified:
+            return Response({"detail": "This account is already verified."}, status=status.HTTP_400_BAD_REQUEST)
+
+        otp_code = f"{random.SystemRandom().randint(0, 999999):06d}"
+        EmailVerificationOTP.objects.update_or_create(
+            user=user,
+            defaults={
+                "otp": otp_code,
+                "expires_at": timezone.now() + timedelta(minutes=10),
+            },
+        )
+
+        try:
+            send_mail(
+                subject="Your PyAnalypt verification code",
+                message=f"Your new verification code is: {otp_code}\n\nExpires in 10 minutes.",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+        except Exception:
+            logger.exception("Failed to resend OTP email to %s", user.email)
+
+        return Response({"detail": "A new verification code has been sent to your email."})
+
+
+class CompleteProfileView(APIView):
+    """
+    POST /auth/registration/complete-profile/
+    Step 3: Finalizes the registration by setting username, full_name, and birthday.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = CompleteProfileSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = request.user
+        user.username = data["username"]
+        user.full_name = data["full_name"]
+        user.birthday = data["birthday"]
+        user.save(update_fields=["username", "full_name", "birthday"])
+
+        return Response({
+            "detail": "Profile completed successfully.",
+            "user": CustomUserDetailsSerializer(user, context={"request": request}).data,
+        })
+
+
 # ── Google OAuth ──────────────────────────────────────────────────────────────
 
 class GoogleLogin(SocialLoginView):
@@ -100,8 +308,7 @@ class GoogleLogin(SocialLoginView):
     client_class = OAuth2Client
 
     def get_response(self):
-        # If the account has 2FA enabled, pause and require TOTP completion —
-        # same gate as the password login flow.
+        # 1. 2FA Gate
         if self.user.totp_enabled:
             totp_token = signing.dumps(
                 {"uid": self.user.pk, "purpose": "2fa-login"},
@@ -111,8 +318,16 @@ class GoogleLogin(SocialLoginView):
                 {"requires_2fa": True, "totp_token": totp_token},
                 status=status.HTTP_202_ACCEPTED,
             )
+
         _create_session(self.request, self.user, str(self.refresh_token))
-        return super().get_response()
+
+        # 2. Check Profile Completion Status
+        is_profile_complete = bool(self.user.full_name and self.user.birthday)
+        response = super().get_response()
+        if not is_profile_complete:
+            response.data["requires_profile_completion"] = True
+
+        return response
 
 
 # ── Custom login (adds 2FA gate + session tracking) ───────────────────────────
@@ -132,9 +347,19 @@ class CustomLoginView(LoginView):
 
         user = self.serializer.validated_data["user"]
 
+        # 1. Check Email Verification Status
+        if not user.email_verified:
+            return Response(
+                {
+                    "detail": "Email address not verified.",
+                    "requires_verification": True,
+                    "email": user.email,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # 2. Check 2FA Gate
         if user.totp_enabled:
-            # Issue a short-lived signed token (5-minute TTL).
-            # Tokens are NOT yet issued — the user must complete 2FA first.
             totp_token = signing.dumps(
                 {"uid": user.pk, "purpose": "2fa-login"},
                 salt="2fa-login",
@@ -146,7 +371,15 @@ class CustomLoginView(LoginView):
 
         self.login()
         _create_session(request, user, str(self.refresh_token))
-        return self.get_response()
+
+        # 3. Check Profile Completion Status
+        is_profile_complete = bool(user.full_name and user.birthday)
+        
+        response = self.get_response()
+        if not is_profile_complete:
+            response.data["requires_profile_completion"] = True
+            
+        return response
 
 
 # ── Token refresh (keeps UserSession.jti in sync after rotation) ─────────────

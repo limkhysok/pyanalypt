@@ -317,7 +317,7 @@ REST_AUTH = {
     # Set to False so the refresh token is returned in the JSON body (SPA/mobile pattern).
     "JWT_AUTH_HTTPONLY": False,
     "USER_DETAILS_SERIALIZER": "apps.users.serializers.CustomUserDetailsSerializer",
-    "REGISTER_SERIALIZER": "apps.users.serializers.CustomRegisterSerializer",
+    "REGISTER_SERIALIZER": "apps.users.serializers.InitialRegisterSerializer",
 }
 
 # ===== SOCIAL ACCOUNT PROVIDERS =====

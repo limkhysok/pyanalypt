@@ -99,6 +99,12 @@ class AuthUser(AbstractUser):
     totp_secret = models.CharField(max_length=64, blank=True, default="")
     totp_enabled = models.BooleanField(default=False)
 
+    birthday = models.DateField(
+        null=True,
+        blank=True,
+        help_text="User's date of birth.",
+    )
+
     USERNAME_FIELD = "username"
     REQUIRED_FIELDS = ["email"]
 
@@ -121,6 +127,33 @@ class AuthUser(AbstractUser):
     def display_name(self):
         """Returns the user's preferred display name."""
         return self.full_name or self.username
+
+
+class EmailVerificationOTP(models.Model):
+    """
+    Single-use 6-digit OTP for email-based registration verification.
+    Created when a user registers; deleted once they successfully verify.
+    OneToOne ensures at most one pending OTP per user — a resend simply
+    overwrites the existing record via update_or_create.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="email_verification_otp",
+    )
+    otp = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "email_verification_otp"
+
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    def __str__(self):
+        return f"OTP for {self.user.email} (expires {self.expires_at})"
 
 
 class UserSession(models.Model):

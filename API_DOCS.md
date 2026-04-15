@@ -21,8 +21,8 @@ Authorization: Bearer <access_token>
 
 ## 🔐 Authentication Endpoints
 
-### 1. Register New User
-Create a new account with email and password. A verification link is sent to the email — the user **cannot log in until the link is clicked**.
+### 1. Register New User (Step 1)
+Create a new inactive account with just email and password. A 6-digit verification code is sent to the email.
 
 - **Endpoint**: `POST /auth/registration/`
 - **Auth Required**: No
@@ -30,52 +30,24 @@ Create a new account with email and password. A verification link is sent to the
 ```json
 {
   "email": "user@example.com",
-  "password": "SecurePass123!",
-  "first_name": "John",
-  "last_name": "Doe"
+  "password": "SecurePass123!"
 }
 ```
-> `first_name` and `last_name` are optional. `username` is auto-generated from the email prefix.
+> Only `email` and `password` are required. No confirmation password field is needed on the backend.
 
 - **Response (201 Created)**:
 ```json
 {
-  "detail": "Verification e-mail sent."
+  "detail": "Initial registration successful. Please check your email for the 6-digit verification code."
 }
 ```
 
 ---
 
-### 2. Verify Email
-Confirm the email address using the key from the verification link sent to the user's inbox.
+### 2. Resend Registration OTP
+Request a new 6-digit verification code if the previous one expired or was not received.
 
-- **Endpoint**: `POST /auth/registration/verify-email/`
-- **Auth Required**: No
-- **Request Body**:
-```json
-{
-  "key": "<key_from_email_link>"
-}
-```
-- **Response (200 OK)**:
-```json
-{
-  "detail": "ok"
-}
-```
-
-> **Frontend flow:**
-> 1. User clicks the link in the email → lands on `http://localhost:3000/verify-email/MjA:1w3wGL:SkMWk8Po...`
-> 2. Extract the key from the **URL path** (everything after `/verify-email/`)
-> 3. `POST /api/v1/auth/registration/verify-email/` with `{ "key": "<extracted_key>" }`
-> 4. On `200 OK` → redirect to `/login`
-
----
-
-### 3. Resend Verification Email
-Resend the verification link if the user didn't receive it or it expired (links expire after **3 days**).
-
-- **Endpoint**: `POST /auth/registration/resend-email/`
+- **Endpoint**: `POST /auth/registration/resend-otp/`
 - **Auth Required**: No
 - **Request Body**:
 ```json
@@ -86,9 +58,80 @@ Resend the verification link if the user didn't receive it or it expired (links 
 - **Response (200 OK)**:
 ```json
 {
-  "detail": "ok"
+  "detail": "A new verification code has been sent to your email."
 }
 ```
+
+---
+
+### 3. Verify Registration OTP (Step 2)
+Activate the account and verify the email address. On success, JWT tokens are issued. The user is now authenticated but must complete their profile.
+
+- **Endpoint**: `POST /auth/registration/verify-otp/`
+- **Auth Required**: No
+- **Request Body**:
+```json
+{
+  "email": "user@example.com",
+  "otp": "123456"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "access": "<access_token>",
+  "refresh": "<refresh_token>",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "username": "user_1234567890",
+    "full_name": "",
+    "birthday": null,
+    "email_verified": true,
+    "is_active": true
+  }
+}
+```
+
+---
+
+### 3. Complete Profile (Step 3)
+Finalize the registration by setting a unique username, full name, and birthday.
+
+- **Endpoint**: `POST /auth/registration/complete-profile/`
+- **Auth Required**: Yes (JWT access token)
+- **Request Body**:
+```json
+{
+  "username": "johndoe",
+  "full_name": "John Doe",
+  "birthday": "1995-05-20"
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "detail": "Profile completed successfully.",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "username": "johndoe",
+    "full_name": "John Doe",
+    "birthday": "1995-05-20",
+    "email_verified": true,
+    "is_active": true
+  }
+}
+```
+
+> **Frontend flow:**
+> 1. User submits email/password → `POST /auth/registration/`
+> 2. On `201 Created` → redirect to `/verify-otp?email=user@example.com`
+> 3. User enters 6-digit code → `POST /auth/registration/verify-otp/`
+> 4. On `200 OK` → store tokens and redirect to `/complete-profile`
+> 5. User enters username, name, and birthday → `POST /auth/registration/complete-profile/`
+> 6. On `200 OK` → redirect to `/dashboard`
+
 
 ---
 
@@ -111,32 +154,31 @@ Log in with **email and password**. The response differs depending on whether th
 {
   "access": "<access_token>",
   "refresh": "<refresh_token>",
-  "user": {
-    "id": 1,
-    "email": "user@example.com",
-    "username": "user",
-    "first_name": "John",
-    "last_name": "Doe",
-    "full_name": "John Doe",
-    "profile_picture": null,
-    "email_verified": true,
-    "is_staff": false,
-    "is_active": true,
-    "date_joined": "2026-03-21T00:00:00Z",
-    "last_login": "2026-03-21T06:00:00Z"
-  }
+  "requires_profile_completion": true,
+  "user": { ... }
 }
 ```
-> Store `access` and `refresh` tokens. Use `access` in every request header. Refresh it before it expires (60 min).
+> **IMPORTANT**: Check for `requires_profile_completion`. If `true`, the user has verified their email but has **not** completed Step 3 (username/full_name/birthday). Redirect them to `/complete-profile`.
 
 #### Case B — 2FA enabled
 - **Response (202 Accepted)**:
 ```json
 {
   "requires_2fa": true,
-  "totp_token": "<short_lived_signed_token>"
+  "totp_token": "<token>"
 }
 ```
+
+#### Case C — Email Not Verified
+- **Response (403 Forbidden)**:
+```json
+{
+  "detail": "Email address not verified.",
+  "requires_verification": true,
+  "email": "user@example.com"
+}
+```
+> **IMPORTANT**: If the user tries to log in with an unverified email, they are blocked. Redirect them back to the `/verify-otp` page using the `email` provided in the response.
 > **No JWT tokens are issued yet.** The `totp_token` expires in **5 minutes**.
 > Frontend must redirect to the 2FA code screen and call [`POST /auth/2fa/verify-login/`](#10-complete-login-with-2fa-code) to finish.
 

@@ -2,10 +2,14 @@
 Users / Auth API URLs
 """
 
-from django.urls import path, include
+from django.urls import path, include  # include kept for dj_rest_auth.urls
 from rest_framework_simplejwt.views import TokenVerifyView
 
 from .views import (
+    CustomRegisterView,
+    RegistrationOTPVerifyView,
+    CompleteProfileView,
+    ResendOTPView,
     GoogleLogin,
     CustomLoginView,
     CustomTokenRefreshView,
@@ -25,8 +29,11 @@ urlpatterns = [
     # ── Auth: logout / password / user profile ───────────────────────────────
     path("auth/", include("dj_rest_auth.urls")),
 
-    # ── Auth: registration & email verification ──────────────────────────────
-    path("auth/registration/", include("dj_rest_auth.registration.urls")),
+    # ── Auth: registration & OTP verification ───────────────────────────────
+    path("auth/registration/", CustomRegisterView.as_view(), name="registration"),
+    path("auth/registration/verify-otp/", RegistrationOTPVerifyView.as_view(), name="registration-verify-otp"),
+    path("auth/registration/complete-profile/", CompleteProfileView.as_view(), name="registration-complete-profile"),
+    path("auth/registration/resend-otp/", ResendOTPView.as_view(), name="registration-resend-otp"),
 
     # ── Google OAuth ─────────────────────────────────────────────────────────
     path("auth/google/", GoogleLogin.as_view(), name="google_login"),
