@@ -1,14 +1,8 @@
 from django.conf import settings
 from django.db import models
-from django.core.validators import (
-    RegexValidator,
-    MinLengthValidator,
-)
+from django.core.validators import RegexValidator, MinLengthValidator
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils import timezone
-
-NAME_REGEX = r"^[a-zA-ZÀ-ÿ'\- ]+$"
-NAME_REGEX_MESSAGE = "Only letters, hyphens, apostrophes, and spaces are allowed."
 
 
 class AuthUserManager(BaseUserManager):
@@ -42,24 +36,6 @@ class AuthUserManager(BaseUserManager):
 class AuthUser(AbstractUser):
     objects = AuthUserManager()
 
-    first_name = models.CharField(
-        max_length=150,
-        blank=True,
-        validators=[
-            RegexValidator(regex=NAME_REGEX, message=NAME_REGEX_MESSAGE),
-            MinLengthValidator(2, message="First name must be at least 2 characters long."),
-        ],
-    )
-
-    last_name = models.CharField(
-        max_length=150,
-        blank=True,
-        validators=[
-            RegexValidator(regex=NAME_REGEX, message=NAME_REGEX_MESSAGE),
-            MinLengthValidator(2, message="Last name must be at least 2 characters long."),
-        ],
-    )
-
     username = models.CharField(
         max_length=150,
         unique=True,
@@ -78,7 +54,10 @@ class AuthUser(AbstractUser):
         max_length=255,
         blank=True,
         validators=[
-            RegexValidator(regex=NAME_REGEX, message=NAME_REGEX_MESSAGE),
+            RegexValidator(
+                regex=r"^[a-zA-ZÀ-ÿ'\- ]+$",
+                message="Only letters, hyphens, apostrophes, and spaces are allowed.",
+            ),
             MinLengthValidator(2, message="Full name must be at least 2 characters long."),
         ],
     )
@@ -136,24 +115,12 @@ class AuthUser(AbstractUser):
     def save(self, *args, **kwargs):
         if self.email:
             self.email = self.email.lower()
-
-        if self.first_name and self.last_name:
-            derived = f"{self.first_name} {self.last_name}"
-            # Only auto-derive full_name when it is blank or still matches the
-            # previously derived value; a manually set full_name is left intact.
-            if not self.full_name or self.full_name == derived:
-                self.full_name = derived
-
         super().save(*args, **kwargs)
 
     @property
     def display_name(self):
         """Returns the user's preferred display name."""
-        if self.full_name:
-            return self.full_name
-        if self.first_name and self.last_name:
-            return f"{self.first_name} {self.last_name}"
-        return self.username
+        return self.full_name or self.username
 
 
 class UserSession(models.Model):

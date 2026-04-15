@@ -26,8 +26,7 @@ class CustomRegisterSerializer(RegisterSerializer):
     password2 = None  # confirmation field removed
 
     password = serializers.CharField(write_only=True)
-    first_name = serializers.CharField(required=False, allow_blank=True)
-    last_name = serializers.CharField(required=False, allow_blank=True)
+    full_name = serializers.CharField(required=False, allow_blank=True)
 
     def validate_email(self, email):
         email = get_adapter().clean_email(email)
@@ -42,8 +41,7 @@ class CustomRegisterSerializer(RegisterSerializer):
         return {
             "password1": self.validated_data.get("password", ""),
             "email": self.validated_data.get("email", ""),
-            "first_name": self.validated_data.get("first_name", ""),
-            "last_name": self.validated_data.get("last_name", ""),
+            "full_name": self.validated_data.get("full_name", ""),
         }
 
     def save(self, request):
@@ -77,8 +75,6 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
             "id",
             "email",
             "username",
-            "first_name",
-            "last_name",
             "full_name",
             "profile_picture",
             "email_verified",

@@ -73,15 +73,14 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
         return user
 
     def _extract_google_names(self, user, extra_data):
-        user.first_name = extra_data.get("given_name", "") or extra_data.get(
-            "first_name", ""
-        )
-        user.last_name = extra_data.get("family_name", "") or extra_data.get(
-            "last_name", ""
-        )
         full_name = extra_data.get("name", "")
-        if not full_name and user.first_name and user.last_name:
-            full_name = f"{user.first_name} {user.last_name}"
+        if not full_name:
+            given = extra_data.get("given_name", "") or extra_data.get("first_name", "")
+            family = extra_data.get("family_name", "") or extra_data.get("last_name", "")
+            if given and family:
+                full_name = f"{given} {family}"
+            elif given or family:
+                full_name = given or family
         user.full_name = full_name
 
     def _extract_google_picture(self, user, extra_data):
@@ -153,8 +152,9 @@ class CustomAccountAdapter(DefaultAccountAdapter):
         """
         user = super().save_user(request, user, form, commit=False)
 
-        if not user.full_name and user.first_name and user.last_name:
-            user.full_name = f"{user.first_name} {user.last_name}"
+        cleaned = form.cleaned_data if hasattr(form, "cleaned_data") else {}
+        if not user.full_name:
+            user.full_name = cleaned.get("full_name", "")
 
         if user.email:
             user.email = user.email.lower()
