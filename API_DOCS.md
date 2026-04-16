@@ -647,6 +647,19 @@ PyAnalypt provides a full administrative interface for managing users and system
 
 All endpoints below are under `/api/v1/datasets/`.
 
+### Dataset Object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | int | Unique identifier |
+| `user` | int | Owner user ID |
+| `file` | string | URL to the stored file |
+| `file_name` | string | Display name of the file |
+| `file_format` | string | File extension (`csv`, `xlsx`, `json`, `parquet`, `sql`) |
+| `file_size` | int | File size in bytes |
+| `uploaded_date` | datetime | When the file was first uploaded |
+| `updated_date` | datetime | Last modification timestamp |
+
 ### 1. Upload File
 Standard multipart/form-data upload.
 
@@ -677,19 +690,14 @@ Retrieves all datasets owned by the authenticated user.
 ]
 ```
 
-### 3. Dataset Detail
-Returns dataset metadata **plus** a `data_preview` (first 50 rows) for immediate table display.
-
-- **Endpoint**: `GET /datasets/{id}/`
-- **Auth Required**: Yes
-
-### 4. Delete Dataset
-Removes the dataset record and its associated file from storage.
+### 3. Delete Dataset
+Removes the dataset record and its associated file from storage. Also logs the DELETE action.
 
 - **Endpoint**: `DELETE /datasets/{id}/`
 - **Auth Required**: Yes
+- **Response (204 No Content)**
 
-### 5. Rename Dataset
+### 4. Rename Dataset
 Rename the display file name of a dataset.
 
 - **Endpoint**: `PATCH /datasets/{id}/rename/`
@@ -701,72 +709,19 @@ Rename the display file name of a dataset.
 }
 ```
 - **Response (200 OK)**: Updated `Dataset` object.
+- **Response (400)** if `file_name` is missing or blank.
 
-### 6. Preview Dataframe
-Get the first N rows of the dataset for inspection. Supports CSV, XLSX, JSON, Parquet, and SQL.
-
-- **Endpoint**: `GET /datasets/{id}/preview/`
-- **Auth Required**: Yes
-- **Query Params**: `?rows=50` *(default: 10, max: 1000)*
-
-### 7. Edit a Single Cell
-Modify a specific cell in the underlying data file.
-
-- **Endpoint**: `POST /datasets/{id}/update_cell/`
-- **Auth Required**: Yes
-- **Request Body**:
-```json
-{
-  "row_index": 5,
-  "column_name": "Age",
-  "value": 25
-}
-```
-- **Response (200 OK)**:
-```json
-{
-  "detail": "Cell updated.",
-  "row_index": 5,
-  "column_name": "Age",
-  "new_value": 25
-}
-```
-
-### 8. Export Dataset
-Download the dataset in a requested format.
+### 5. Export Dataset
+Download the dataset converted to a requested format. Defaults to the dataset's original format if `?format` is omitted.
 
 - **Endpoint**: `GET /datasets/{id}/export/`
 - **Auth Required**: Yes
-- **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`, `parquet`, `sql`; defaults to original format)*
+- **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`, `parquet`, `sql`)*
+- **Response**: Binary file download with appropriate `Content-Disposition` header.
+- **Response (400)** if the format is unsupported.
 
-### 9. AI Data Analysis (Ollama)
-Generate "problem statements" or analysis goals for the dataset using a local Ollama AI model. This endpoint analyzes column metadata (names, types, missing values, unique values) to provide AI-generated insights.
-
-- **Endpoint**: `POST /datasets/{id}/analyze_issues/`
-- **Auth Required**: Yes
-
-**Sample Request**:
-```http
-POST /api/v1/datasets/15/analyze_issues/
-Authorization: Bearer <access_token>
-Content-Type: application/json
-
-{}
-```
-> Note: Body can be empty as headers/stats are extracted automatically from the stored file.
-
-**Sample Response (200 OK)**:
-```json
-{
-  "dataset_id": 15,
-  "file_name": "pharma_sales_data.csv",
-  "problem_statements": "1. **Negative Price Outliers**: The 'unit_price' column contains negative values...\n2. **Missing Dosage Metadata**: A significant number of rows are missing 'dosage' info...\n3. **Temporal Analysis Gap**: The distribution of 'sale_date' suggests reporting gaps."
-}
-```
-> **Note**: This requires a local Ollama instance running with the `llama3` model (configurable in `config/settings.py`).
-
-### 10. Duplicate Dataset
-Clone an existing dataset into a new record. Supports on-the-fly format conversion and maintains data lineage through the `parent` field.
+### 6. Duplicate Dataset
+Clone an existing dataset into a new record. Supports on-the-fly format conversion and maintains data lineage via the `parent` field.
 
 - **Endpoint**: `POST /datasets/{id}/duplicate/`
 - **Auth Required**: Yes
@@ -777,16 +732,16 @@ Clone an existing dataset into a new record. Supports on-the-fly format conversi
   "format": "sql"
 }
 ```
-> **Note**: Both fields are optional. `new_file_name` defaults to `<original>_copy` and `format` defaults to the source dataset's format.
+> Both fields are optional. `new_file_name` defaults to `<original>_copy`. `format` defaults to the source dataset's format.
 
-- **Response (201 Created)**: Updated `Dataset` object of the new clone.
+- **Response (201 Created)**: `Dataset` object of the new clone.
 
-### 11. Activity Logs
-Retrieve a stream of activities performed on datasets (uploads, deletes, renames, etc.).
+### 7. Activity Logs
+Retrieve a stream of activities performed on datasets. Logged actions: `UPLOAD`, `RENAME`, `DELETE`, `DUPLICATE`, `EXPORT`.
 
 - **Endpoint**: `GET /datasets/activity_logs/`
 - **Auth Required**: Yes
-- **Query Params**: `?dataset={id}` *(optional: filter logs by a specific dataset)*
+- **Query Params**: `?dataset={id}` *(optional — filter logs by a specific dataset)*
 - **Response (200 OK)**:
 ```json
 [

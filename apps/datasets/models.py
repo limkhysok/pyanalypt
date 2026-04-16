@@ -74,10 +74,6 @@ class DatasetActivityLog(models.Model):
         ("DELETE", "Delete"),
         ("DUPLICATE", "Duplicate"),
         ("EXPORT", "Export"),
-        ("UPDATE_CELL", "Update Cell"),
-        ("PREVIEW", "Preview"),
-        ("DIAGNOSE", "Diagnose"),
-        ("AI_ANALYSIS", "AI Analysis"),
     ]
 
     user = models.ForeignKey(
