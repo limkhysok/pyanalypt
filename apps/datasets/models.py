@@ -37,7 +37,7 @@ class Dataset(models.Model):
     def save(self, *args, **kwargs):
         # 1. Set basic metadata — guard all .name/.size accesses behind if self.file
         if self.file and not self.file_name:
-            self.file_name = self.file.name
+            self.file_name = os.path.basename(self.file.name)
         if self.file and not self.file_format:
             self.file_format = os.path.splitext(self.file.name)[1][1:].lower()
         if self.file:
