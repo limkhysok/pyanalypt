@@ -15,8 +15,6 @@ class Dataset(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="datasets",
-        null=True,
-        blank=True,
     )
     file = models.FileField(
         upload_to="datasets/%Y/%m/%d/", validators=[validate_file_size_and_type]
@@ -37,10 +35,10 @@ class Dataset(models.Model):
     updated_date = models.DateTimeField(auto_now=True)
 
     def save(self, *args, **kwargs):
-        # 1. Set basic metadata
-        if not self.file_name:
+        # 1. Set basic metadata — guard all .name/.size accesses behind if self.file
+        if self.file and not self.file_name:
             self.file_name = self.file.name
-        if not self.file_format:
+        if self.file and not self.file_format:
             self.file_format = os.path.splitext(self.file.name)[1][1:].lower()
         if self.file:
             self.file_size = self.file.size
@@ -59,8 +57,8 @@ class Dataset(models.Model):
 
 @receiver(pre_delete, sender=Dataset)
 def dataset_delete(sender, instance, **kwargs):
-    if instance.file and os.path.isfile(instance.file.path):
-        os.remove(instance.file.path)
+    if instance.file:
+        instance.file.delete(save=False)
 
 
 class DatasetActivityLog(models.Model):
@@ -74,6 +72,10 @@ class DatasetActivityLog(models.Model):
         ("DELETE", "Delete"),
         ("DUPLICATE", "Duplicate"),
         ("EXPORT", "Export"),
+        ("UPDATE_CELL", "Update Cell"),
+        ("PREVIEW", "Preview"),
+        ("DIAGNOSE", "Diagnose"),
+        ("AI_ANALYSIS", "AI Analysis"),
     ]
 
     user = models.ForeignKey(

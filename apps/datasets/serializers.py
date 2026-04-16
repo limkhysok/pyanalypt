@@ -12,6 +12,7 @@ class DatasetSerializer(serializers.ModelSerializer):
             "file_name",
             "file_format",
             "file_size",
+            "parent",
             "uploaded_date",
             "updated_date",
         )
@@ -20,6 +21,7 @@ class DatasetSerializer(serializers.ModelSerializer):
             "user",
             "file_format",
             "file_size",
+            "parent",
             "uploaded_date",
             "updated_date",
         )
@@ -28,4 +30,13 @@ class DatasetSerializer(serializers.ModelSerializer):
 class DatasetActivityLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = DatasetActivityLog
-        fields = "__all__"
+        fields = (
+            "id",
+            "user",
+            "dataset",
+            "dataset_name_snap",
+            "action",
+            "details",
+            "timestamp",
+        )
+        read_only_fields = fields

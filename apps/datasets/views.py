@@ -1,15 +1,30 @@
-import pandas as pd
+import io
+import os
+import re
+import logging
 import sqlite3
+
+import pandas as pd
 from rest_framework import mixins, viewsets, permissions, generics, status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.http import HttpResponse
 from django.core.files.base import ContentFile
+from django.shortcuts import get_object_or_404
 from .models import Dataset, DatasetActivityLog
 from .serializers import DatasetSerializer, DatasetActivityLogSerializer
 
+logger = logging.getLogger(__name__)
+
 ERR_UNSUPPORTED_FORMAT = "Unsupported format."
 SQLITE_MEMORY = ":memory:"
+
+
+class StandardPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
 
 class CreateDatasetView(generics.CreateAPIView):
@@ -23,7 +38,6 @@ class CreateDatasetView(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         instance = serializer.save(user=self.request.user)
-        # Log upload
         DatasetActivityLog.objects.create(
             user=self.request.user,
             dataset=instance,
@@ -35,27 +49,29 @@ class CreateDatasetView(generics.CreateAPIView):
 
 class DatasetViewSet(
     mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
     mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
     """
     Endpoints:
       GET    /datasets/             — list all datasets
+      GET    /datasets/{id}/         — retrieve dataset
       DELETE /datasets/{id}/         — delete dataset
       PATCH  /datasets/{id}/rename/  — rename file_name
       GET    /datasets/{id}/export/  — export (?format=csv|json|xlsx|parquet|sql)
       POST   /datasets/{id}/duplicate/ — duplicate (?format=...)
-      GET    /datasets/activity_logs/ — list activities
+      GET    /datasets/activity_logs/ — list activities (?dataset_id=<id>)
     """
 
     serializer_class = DatasetSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardPagination
 
     def get_queryset(self):
-        return Dataset.objects.filter(user=self.request.user)
+        return Dataset.objects.filter(user=self.request.user).select_related("user")
 
     def _log_activity(self, dataset, action, details=None):
-        """Helper to create activity logs."""
         DatasetActivityLog.objects.create(
             user=self.request.user,
             dataset=dataset,
@@ -67,7 +83,7 @@ class DatasetViewSet(
     def _load_dataframe(self, path, file_format):
         if file_format == "csv":
             return pd.read_csv(path)
-        if file_format in ["xlsx"]:
+        if file_format == "xlsx":
             return pd.read_excel(path)
         if file_format == "json":
             return pd.read_json(path)
@@ -83,8 +99,13 @@ class DatasetViewSet(
                 tables = cursor.fetchall()
                 if not tables:
                     return None
-                return pd.read_sql(f"SELECT * FROM {tables[0][0]}", conn)
+                table_name = tables[0][0]
+                # Validate table name to prevent SQL injection
+                if not re.match(r'^[A-Za-z_]\w*$', table_name):
+                    return None
+                return pd.read_sql(f'SELECT * FROM "{table_name}"', conn)
             except Exception:
+                logger.exception("Failed to load SQL file: %s", path)
                 return None
             finally:
                 conn.close()
@@ -107,14 +128,12 @@ class DatasetViewSet(
         dataset = self.get_object()
         file_path = dataset.file.path
         export_format = request.query_params.get("format", dataset.file_format).lower()
+        base_name = os.path.splitext(dataset.file_name)[0]
 
         try:
             df = self._load_dataframe(file_path, dataset.file_format)
             if df is None:
                 return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
-
-            import io
-            base_name = dataset.file_name.split(".")[0]
 
             if export_format == "csv":
                 buf = io.StringIO()
@@ -138,36 +157,37 @@ class DatasetViewSet(
                 response["Content-Disposition"] = f'attachment; filename="{base_name}.parquet"'
             elif export_format == "sql":
                 conn = sqlite3.connect(SQLITE_MEMORY)
-                table_name = "".join(e for e in base_name if e.isalnum()) or "dataset"
+                table_name = re.sub(r'\W', '_', base_name) or "dataset"
                 df.to_sql(table_name, conn, index=False)
                 buf = io.StringIO()
                 for line in conn.iterdump():
                     buf.write(f"{line}\n")
+                conn.close()
                 response = HttpResponse(buf.getvalue(), content_type="application/sql")
                 response["Content-Disposition"] = f'attachment; filename="{base_name}.sql"'
-                conn.close()
             else:
                 return Response({"detail": f"Unsupported format: {export_format}"}, status=status.HTTP_400_BAD_REQUEST)
 
             self._log_activity(dataset, "EXPORT", {"format": export_format})
             return response
-        except Exception as e:
-            return Response({"detail": f"Export failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except OSError:
+            logger.exception("File not accessible during export for dataset %s", pk)
+            return Response({"detail": "Dataset file not found."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception:
+            logger.exception("Unexpected error during export for dataset %s", pk)
+            return Response({"detail": "Export failed."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=["post"])
     def duplicate(self, request, pk=None):
         source = self.get_object()
-        new_name = request.data.get("new_file_name")
+        new_name = request.data.get("new_file_name") or f"{source.file_name}_copy"
         new_format = request.data.get("format", source.file_format).lower()
-        if not new_name:
-            new_name = f"{source.file_name}_copy"
 
         try:
             df = self._load_dataframe(source.file.path, source.file_format)
             if df is None:
                 return Response({"detail": "Failed to load source."}, status=status.HTTP_400_BAD_REQUEST)
 
-            import io
             if new_format == "csv":
                 buf = io.StringIO()
                 df.to_csv(buf, index=False)
@@ -185,23 +205,27 @@ class DatasetViewSet(
                 df.to_parquet(buf, index=False)
                 content = ContentFile(buf.getvalue())
             elif new_format == "sql":
-                buf = io.StringIO()
                 conn = sqlite3.connect(SQLITE_MEMORY)
-                table_name = "".join(e for e in new_name if e.isalnum()) or "dataset"
+                table_name = re.sub(r'\W', '_', new_name) or "dataset"
                 df.to_sql(table_name, conn, index=False)
+                buf = io.StringIO()
                 for line in conn.iterdump():
                     buf.write(f"{line}\n")
-                content = ContentFile(buf.getvalue().encode("utf-8"))
                 conn.close()
+                content = ContentFile(buf.getvalue().encode("utf-8"))
             else:
-                return Response({"detail": "Unsupported format"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": "Unsupported format."}, status=status.HTTP_400_BAD_REQUEST)
 
             new_ds = Dataset(user=self.request.user, file_name=new_name, file_format=new_format, parent=source)
             new_ds.file.save(f"{new_name}.{new_format}", content, save=True)
             self._log_activity(source, "DUPLICATE", {"new_name": new_name, "format": new_format})
             return Response(self.get_serializer(new_ds).data, status=status.HTTP_201_CREATED)
-        except Exception as e:
-            return Response({"detail": f"Failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except OSError:
+            logger.exception("File not accessible during duplicate for dataset %s", pk)
+            return Response({"detail": "Source file not found."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception:
+            logger.exception("Unexpected error during duplicate for dataset %s", pk)
+            return Response({"detail": "Duplicate failed."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def perform_destroy(self, instance):
         self._log_activity(instance, "DELETE", {"file_name": instance.file_name})
@@ -209,9 +233,16 @@ class DatasetViewSet(
 
     @action(detail=False, methods=["get"])
     def activity_logs(self, request):
-        logs = DatasetActivityLog.objects.filter(user=request.user)
-        dataset_id = request.query_params.get("dataset")
-        if dataset_id:
+        logs = DatasetActivityLog.objects.filter(user=request.user).select_related("user", "dataset")
+        dataset_id = request.query_params.get("dataset_id")
+        if dataset_id is not None:
+            try:
+                dataset_id = int(dataset_id)
+            except (TypeError, ValueError):
+                return Response({"detail": "dataset_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            get_object_or_404(Dataset, id=dataset_id, user=request.user)
             logs = logs.filter(dataset_id=dataset_id)
+        page = self.paginate_queryset(logs)
+        if page is not None:
+            return self.get_paginated_response(DatasetActivityLogSerializer(page, many=True).data)
         return Response(DatasetActivityLogSerializer(logs, many=True).data)
-
