@@ -146,6 +146,15 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
             raise serializers.ValidationError("This username is already taken.")
         return value
 
+    def validate_profile_picture(self, value):
+        """
+        Handle the case where the frontend sends an empty string to 'clear' the picture.
+        In multipart/form-data, an empty file input sends an empty string.
+        """
+        if value == "":
+            return None
+        return value
+
 
 # ── Sessions ─────────────────────────────────────────────────────────────────
 
