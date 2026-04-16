@@ -10,6 +10,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import RegexValidator
 
 from .models import UserSession
+from .utils import validate_birthday_not_future
 
 User = get_user_model()
 
@@ -80,22 +81,14 @@ class CompleteProfileSerializer(serializers.Serializer):
         ],
     )
     birthday = serializers.DateField(
+        validators=[validate_birthday_not_future],
         error_messages={'invalid': 'Invalid date format. Use YYYY-MM-DD.'}
     )
 
     def validate_username(self, value):
         user = self.context['request'].user
-        # Exclude self in case the user somehow has this username already
         if User.objects.filter(username__iexact=value).exclude(pk=user.pk).exists():
             raise serializers.ValidationError("This username is already taken.")
-        return value
-
-    def validate_birthday(self, value):
-        today = date.today()
-        if value >= today:
-            raise serializers.ValidationError("Birthday must be in the past.")
-        if (today - value).days > 365 * 120:
-            raise serializers.ValidationError("Enter a valid date of birth.")
         return value
 
 
@@ -121,6 +114,8 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
     Writable: username, full_name, birthday, profile_picture.
     Read-only: email and all account-state fields.
     """
+
+    birthday = serializers.DateField(validators=[validate_birthday_not_future])
 
     class Meta(UserDetailsSerializer.Meta):
         model = User
@@ -151,14 +146,6 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
         user = self.context["request"].user
         if User.objects.filter(username__iexact=value).exclude(pk=user.pk).exists():
             raise serializers.ValidationError("This username is already taken.")
-        return value
-
-    def validate_birthday(self, value):
-        today = date.today()
-        if value >= today:
-            raise serializers.ValidationError("Birthday must be in the past.")
-        if (today - value).days > 365 * 120:
-            raise serializers.ValidationError("Enter a valid date of birth.")
         return value
 
 

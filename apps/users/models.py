@@ -4,6 +4,8 @@ from django.core.validators import RegexValidator, MinLengthValidator
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils import timezone
 
+from .utils import validate_birthday_not_future
+
 
 class AuthUserManager(BaseUserManager):
     """
@@ -67,12 +69,7 @@ class AuthUser(AbstractUser):
         max_length=254,
         null=False,
         blank=False,
-        validators=[
-            RegexValidator(
-                regex=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
-                message="Enter a valid email address.",
-            ),
-        ],
+        help_text="Primary email address for the user.",
     )
 
     email_verified = models.BooleanField(
@@ -102,6 +99,7 @@ class AuthUser(AbstractUser):
     birthday = models.DateField(
         null=True,
         blank=True,
+        validators=[validate_birthday_not_future],
         help_text="User's date of birth.",
     )
 

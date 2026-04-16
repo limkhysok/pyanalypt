@@ -11,7 +11,7 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 
 User = get_user_model()
-logger = logging.getLogger(__name__)
+from .utils import sanitize_username
 
 
 def _generate_unique_username(email):
@@ -20,7 +20,7 @@ def _generate_unique_username(email):
     Appends an incrementing counter if the base username is already taken.
     Uses IntegrityError handling to be safe under concurrent signups.
     """
-    email_prefix = email.split("@")[0]
+    email_prefix = sanitize_username(email.split("@")[0])
     username = email_prefix
     counter = 1
     while User.objects.filter(username=username).exists():

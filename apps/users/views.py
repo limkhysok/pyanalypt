@@ -387,27 +387,21 @@ class CustomLoginView(LoginView):
     def post(self, request):
         self.request = request
 
-        # Pre-check: Django's auth backend rejects is_active=False users before
-        # our email_verified check can run. Detect unverified accounts here so
-        # the frontend receives requires_verification instead of a generic error.
+        # Pre-check: Detect unverified accounts before Django's auth backend rejects them
+        # (which it does for is_active=False users). This ensures the frontend
+        # receives a 'requires_verification' signal instead of a generic login error.
         email = request.data.get("email", "").strip().lower()
         if email:
-            try:
-                pending = User.objects.get(
-                    email__iexact=email,
-                    is_active=False,
-                    email_verified=False,
-                )
+            user_found = User.objects.filter(email__iexact=email).first()
+            if user_found and not user_found.email_verified:
                 return Response(
                     {
                         "detail": "Email address not verified.",
                         "requires_verification": True,
-                        "email": pending.email,
+                        "email": user_found.email,
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
-            except User.DoesNotExist:
-                pass
 
         self.serializer = self.get_serializer(data=request.data)
         self.serializer.is_valid(raise_exception=True)
