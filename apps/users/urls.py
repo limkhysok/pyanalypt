@@ -12,6 +12,7 @@ from .views import (
     ResendOTPView,
     GoogleLogin,
     CustomLoginView,
+    CustomPasswordChangeView,
     CustomTokenRefreshView,
     TOTPSetupView,
     TOTPEnableView,
@@ -25,6 +26,9 @@ from .views import (
 urlpatterns = [
     # ── Auth: login (overrides dj_rest_auth to add 2FA gate + session tracking)
     path("auth/login/", CustomLoginView.as_view(), name="rest_login"),
+
+    # ── Auth: password change (overrides dj_rest_auth to add throttle + session revocation)
+    path("auth/password/change/", CustomPasswordChangeView.as_view(), name="rest_password_change"),
 
     # ── Auth: logout / password / user profile ───────────────────────────────
     path("auth/", include("dj_rest_auth.urls")),

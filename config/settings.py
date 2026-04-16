@@ -214,10 +214,13 @@ REST_FRAMEWORK = {
     # Uses the configured CACHES backend (locmem in dev, Redis in prod).
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {
-        "otp_resend":   "5/hour",   # ResendOTPView
-        "otp_verify":   "10/hour",  # RegistrationOTPVerifyView
-        "registration": "10/hour",  # CustomRegisterView
-        "login":        "20/hour",  # CustomLoginView (brute-force protection)
+        "otp_resend":      "5/hour",   # ResendOTPView
+        "otp_verify":      "10/hour",  # RegistrationOTPVerifyView
+        "registration":    "10/hour",  # CustomRegisterView
+        "login":           "20/hour",  # CustomLoginView (brute-force protection)
+        "totp_verify":     "10/hour",  # TOTPVerifyLoginView (prevents TOTP brute-force)
+        "totp_action":     "20/hour",  # TOTPSetupView / TOTPEnableView / TOTPDisableView
+        "password_change": "5/hour",   # CustomPasswordChangeView
     },
 }
 
@@ -327,6 +330,8 @@ REST_AUTH = {
     "JWT_AUTH_HTTPONLY": False,
     "USER_DETAILS_SERIALIZER": "apps.users.serializers.CustomUserDetailsSerializer",
     "REGISTER_SERIALIZER": "apps.users.serializers.InitialRegisterSerializer",
+    # Require the current password when changing to a new one.
+    "OLD_PASSWORD_FIELD_ENABLED": True,
 }
 
 # ===== SOCIAL ACCOUNT PROVIDERS =====

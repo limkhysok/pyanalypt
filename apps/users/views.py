@@ -17,14 +17,14 @@ from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.views import APIView
 
-from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
+from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken, AccessToken
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
-from dj_rest_auth.views import LoginView
+from dj_rest_auth.views import LoginView, PasswordChangeView
 
 from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
 from allauth.socialaccount.providers.oauth2.client import OAuth2Client
@@ -66,15 +66,16 @@ def _parse_user_agent(request):
 
 
 def _create_session(request, user, refresh_token_str):
-    """Create a UserSession record for a newly issued refresh token."""
+    """Create a UserSession record for a newly issued refresh token.
+    Returns the created UserSession, or None if session tracking fails."""
     try:
         jti = JWTRefreshToken(refresh_token_str)["jti"]
     except Exception:
         logger.exception("Failed to extract JTI for session tracking (user=%s)", user.pk)
-        return  # Never block login due to session-tracking failure
+        return None  # Never block login due to session-tracking failure
 
     device, browser = _parse_user_agent(request)
-    UserSession.objects.create(
+    return UserSession.objects.create(
         user=user,
         jti=jti,
         device=device,
@@ -107,6 +108,15 @@ class OtpResendThrottle(AnonRateThrottle):
 
 class LoginThrottle(AnonRateThrottle):
     scope = "login"
+
+class TOTPVerifyThrottle(AnonRateThrottle):
+    scope = "totp_verify"
+
+class TOTPActionThrottle(UserRateThrottle):
+    scope = "totp_action"
+
+class PasswordChangeThrottle(UserRateThrottle):
+    scope = "password_change"
 
 
 # ── Registration ─────────────────────────────────────────────────────────────
@@ -227,10 +237,14 @@ class RegistrationOTPVerifyView(APIView):
 
         refresh = JWTRefreshToken.for_user(user)
         refresh_str = str(refresh)
-        _create_session(request, user, refresh_str)
+        session = _create_session(request, user, refresh_str)
+
+        access_token = refresh.access_token
+        if session:
+            access_token["session_id"] = session.pk
 
         return Response({
-            "access": str(refresh.access_token),
+            "access": str(access_token),
             "refresh": refresh_str,
             "requires_profile_completion": True,
             "user": CustomUserDetailsSerializer(user, context={"request": request}).data,
@@ -258,7 +272,8 @@ class ResendOTPView(APIView):
             return Response({"detail": "If an account exists with this email, a new code has been sent."})
 
         if user.email_verified:
-            return Response({"detail": "This account is already verified."}, status=status.HTTP_400_BAD_REQUEST)
+            # Return the same generic message to avoid confirming which accounts are verified.
+            return Response({"detail": "If an account exists with this email, a new code has been sent."})
 
         otp_code = f"{random.SystemRandom().randint(0, 999999):06d}"
         EmailVerificationOTP.objects.update_or_create(
@@ -292,13 +307,19 @@ class CompleteProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        user = request.user
+        if user.full_name and user.birthday:
+            return Response(
+                {"detail": "Profile has already been completed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = CompleteProfileSerializer(
             data=request.data, context={"request": request}
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        user = request.user
         user.username = data["username"]
         user.full_name = data["full_name"]
         user.birthday = data["birthday"]
@@ -338,7 +359,9 @@ class GoogleLogin(SocialLoginView):
                 status=status.HTTP_202_ACCEPTED,
             )
 
-        _create_session(self.request, self.user, str(self.refresh_token))
+        session = _create_session(self.request, self.user, str(self.refresh_token))
+        if session:
+            self.access_token["session_id"] = session.pk
 
         # 2. Check Profile Completion Status
         is_profile_complete = bool(self.user.full_name and self.user.birthday)
@@ -414,7 +437,9 @@ class CustomLoginView(LoginView):
             )
 
         self.login()
-        _create_session(request, user, str(self.refresh_token))
+        session = _create_session(request, user, str(self.refresh_token))
+        if session:
+            self.access_token["session_id"] = session.pk
 
         # 3. Check Profile Completion Status
         is_profile_complete = bool(user.full_name and user.birthday)
@@ -446,10 +471,16 @@ class CustomTokenRefreshView(TokenRefreshView):
         if response.status_code == 200 and old_jti:
             try:
                 new_jti = JWTRefreshToken(response.data.get("refresh", ""))["jti"]
-                UserSession.objects.filter(jti=old_jti, is_active=True).update(
-                    jti=new_jti,
-                    last_active=timezone.now(),
-                )
+                session = UserSession.objects.filter(jti=old_jti, is_active=True).first()
+                if session:
+                    session.jti = new_jti
+                    session.last_active = timezone.now()
+                    session.save(update_fields=["jti", "last_active"])
+
+                    # Re-issue access token with session_id claim so is_current stays accurate.
+                    new_access = AccessToken(response.data["access"])
+                    new_access["session_id"] = session.pk
+                    response.data["access"] = str(new_access)
             except Exception:
                 logger.exception("Failed to sync UserSession JTI after token rotation (old_jti=%s)", old_jti)
 
@@ -466,6 +497,7 @@ class TOTPSetupView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [TOTPActionThrottle]
 
     def get(self, request):
         user = request.user
@@ -490,6 +522,7 @@ class TOTPEnableView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [TOTPActionThrottle]
 
     def post(self, request):
         serializer = TOTPEnableSerializer(
@@ -508,6 +541,7 @@ class TOTPDisableView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [TOTPActionThrottle]
 
     def post(self, request):
         serializer = TOTPDisableSerializer(
@@ -529,6 +563,7 @@ class TOTPVerifyLoginView(APIView):
     """
 
     permission_classes = [AllowAny]
+    throttle_classes = [TOTPVerifyThrottle]
 
     def post(self, request):
         serializer = TOTPVerifyLoginSerializer(data=request.data)
@@ -578,16 +613,47 @@ class TOTPVerifyLoginView(APIView):
             )
 
         refresh = JWTRefreshToken.for_user(user)
-        access_str = str(refresh.access_token)
         refresh_str = str(refresh)
+        session = _create_session(request, user, refresh_str)
 
-        _create_session(request, user, refresh_str)
+        access_token = refresh.access_token
+        if session:
+            access_token["session_id"] = session.pk
 
         return Response({
-            "access": access_str,
+            "access": str(access_token),
             "refresh": refresh_str,
             "user": CustomUserDetailsSerializer(user, context={"request": request}).data,
         })
+
+
+# ── Password change (adds throttle + revokes other sessions) ──────────────────
+
+class CustomPasswordChangeView(PasswordChangeView):
+    """
+    POST /auth/password/change/
+    Wraps dj-rest-auth PasswordChangeView to:
+    - Enforce a per-user rate limit.
+    - Revoke all active sessions except the current one after a successful change.
+    """
+
+    throttle_classes = [PasswordChangeThrottle]
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            current_session_id = None
+            try:
+                if hasattr(request, "auth") and request.auth:
+                    current_session_id = request.auth.get("session_id")
+            except Exception:
+                pass
+            sessions = UserSession.objects.filter(user=request.user, is_active=True)
+            if current_session_id:
+                sessions = sessions.exclude(pk=current_session_id)
+            for session in sessions:
+                _revoke_session(session)
+        return response
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
@@ -600,6 +666,15 @@ class UserSessionListView(generics.ListAPIView):
 
     def get_queryset(self):
         return UserSession.objects.filter(user=self.request.user, is_active=True)
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        try:
+            if hasattr(self.request, "auth") and self.request.auth:
+                ctx["current_session_id"] = self.request.auth.get("session_id")
+        except Exception:
+            pass
+        return ctx
 
 
 class UserSessionRevokeView(APIView):

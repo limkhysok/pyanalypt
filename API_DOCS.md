@@ -101,7 +101,7 @@ Activate the account and verify the email address. On success, JWT tokens are is
 ---
 
 ### 4. Complete Profile (Step 3)
-Finalize the registration by setting a unique username, full name, and birthday.
+Finalize the registration by setting a unique username, full name, and birthday. Can only be called once — calling it again after the profile is already set returns a 400 error.
 
 - **Endpoint**: `POST /auth/registration/complete-profile/`
 - **Auth Required**: Yes (JWT access token)
@@ -126,6 +126,12 @@ Finalize the registration by setting a unique username, full name, and birthday.
     "email_verified": true,
     "is_active": true
   }
+}
+```
+- **Response (400)** if profile is already completed:
+```json
+{
+  "detail": "Profile has already been completed."
 }
 ```
 
@@ -242,37 +248,48 @@ Retrieve profile information for the authenticated user.
 ---
 
 ### 8. Update Profile
-Update your profile name. Only these two fields are writable — all others are read-only and will be silently ignored if sent.
+Update one or more profile fields. Send only the fields you want to change — unset fields are left as-is. `email` is the only permanently read-only field.
 
 - **Endpoint**: `PATCH /auth/user/`
 - **Auth Required**: Yes
 
-| Field | Writable | Notes |
+| Field | Writable | Validation |
 |---|---|---|
-| `full_name` | ✅ Yes | Letters, hyphens, apostrophes, and spaces only |
-| `birthday` | ✅ Yes | Date in YYYY-MM-DD format |
-| `email` | ❌ Read-only | Cannot be changed via this endpoint |
-| `username` | ❌ Read-only | Set during profile completion, not editable after |
-| `profile_picture` | ❌ Read-only | Set via Google OAuth only |
+| `username` | ✅ Yes | 3–150 chars; letters, numbers, dots, underscores, hyphens only; must be unique |
+| `full_name` | ✅ Yes | 2–255 chars; letters, hyphens, apostrophes, and spaces only |
+| `birthday` | ✅ Yes | YYYY-MM-DD; must be in the past and no more than 120 years ago |
+| `profile_picture` | ✅ Yes | Must be a valid HTTPS URL; send `null` to clear |
+| `email` | ❌ Read-only | Cannot be changed |
 
-- **Request Body** *(send only the fields you want to change)*:
+- **Request Body** *(any subset of writable fields)*:
 ```json
 {
-  "full_name": "Jonathan Doe"
+  "username": "johnny",
+  "full_name": "Jonathan Doe",
+  "birthday": "1995-05-20",
+  "profile_picture": "https://example.com/avatar.jpg"
 }
 ```
-- **Response (200 OK)**: Full user object (same shape as GET /auth/user/).
+- **Response (200 OK)**: Full user object (same shape as `GET /auth/user/`).
+- **Response (400)** examples:
+```json
+{ "username": ["This username is already taken."] }
+{ "birthday": ["Birthday must be in the past."] }
+{ "profile_picture": ["Profile picture URL must use HTTPS protocol for security."] }
+```
 
 ---
 
 ### 9. Change Password
-Change password while authenticated. The user stays logged in after this.
+Change password while authenticated. The current session stays active; all **other** active sessions are revoked automatically so other devices are forced to log in again.
 
 - **Endpoint**: `POST /auth/password/change/`
 - **Auth Required**: Yes
+- **Rate Limit**: 5 requests/hour per user
 - **Request Body**:
 ```json
 {
+  "old_password": "CurrentPass123!",
   "new_password1": "NewSecurePass456!",
   "new_password2": "NewSecurePass456!"
 }
@@ -283,6 +300,14 @@ Change password while authenticated. The user stays logged in after this.
   "detail": "New password has been saved."
 }
 ```
+- **Response (400)** if `old_password` is wrong:
+```json
+{
+  "old_password": ["Your old password was entered incorrectly. Please enter it again."]
+}
+```
+
+> All sessions except the one making this request are blacklisted immediately. The current device stays logged in.
 
 ---
 
@@ -375,6 +400,7 @@ Generates a new TOTP secret and returns the `otpauth://` URI for rendering a QR 
 
 - **Endpoint**: `GET /auth/2fa/setup/`
 - **Auth Required**: Yes
+- **Rate Limit**: 20 requests/hour per user
 - **Response (200 OK)**:
 ```json
 {
@@ -396,6 +422,7 @@ Activates 2FA by verifying the first TOTP code from the authenticator app. Must 
 
 - **Endpoint**: `POST /auth/2fa/enable/`
 - **Auth Required**: Yes
+- **Rate Limit**: 20 requests/hour per user
 - **Request Body**:
 ```json
 {
@@ -423,6 +450,7 @@ Turns off 2FA. Requires both the current password and a valid TOTP code to confi
 
 - **Endpoint**: `POST /auth/2fa/disable/`
 - **Auth Required**: Yes
+- **Rate Limit**: 20 requests/hour per user
 - **Request Body**:
 ```json
 {
@@ -445,6 +473,7 @@ Finishes a login that was paused by the 2FA gate. Receives the same JWT response
 
 - **Endpoint**: `POST /auth/2fa/verify-login/`
 - **Auth Required**: No *(user is not authenticated yet at this point)*
+- **Rate Limit**: 10 requests/hour per IP
 - **Request Body**:
 ```json
 {
@@ -503,6 +532,7 @@ Each login creates a session record that tracks the device, browser, and IP addr
 | `ip_address` | string | IP address at login |
 | `created_at` | datetime | When the session was created (login time) |
 | `last_active` | datetime | Last time the refresh token was used |
+| `is_current` | boolean | `true` if this session belongs to the token making the request |
 
 ---
 
@@ -520,7 +550,8 @@ Returns all active sessions for the current user.
     "browser": "Chrome on Windows",
     "ip_address": "192.168.1.10",
     "created_at": "2026-04-14T08:00:00Z",
-    "last_active": "2026-04-14T09:30:00Z"
+    "last_active": "2026-04-14T09:30:00Z",
+    "is_current": true
   },
   {
     "id": 4,
@@ -528,12 +559,13 @@ Returns all active sessions for the current user.
     "browser": "Mobile Safari on iOS",
     "ip_address": "10.0.0.5",
     "created_at": "2026-04-13T20:00:00Z",
-    "last_active": "2026-04-13T20:45:00Z"
+    "last_active": "2026-04-13T20:45:00Z",
+    "is_current": false
   }
 ]
 ```
 
-> **Frontend tip:** You can visually highlight the "current" session by comparing `ip_address` and `browser` against the user's current device. There is no explicit `is_current` flag — identify it by recency (`last_active`) or matching UA.
+> **Frontend tip:** Use `is_current: true` to highlight and protect the active session in the UI. When building a "sign out all other devices" flow, skip the session where `is_current` is `true` and call `DELETE /auth/sessions/{id}/` on the rest, or use `POST /auth/sessions/revoke-all/` (which revokes everything including the current session).
 
 ---
 

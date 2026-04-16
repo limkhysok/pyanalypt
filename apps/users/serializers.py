@@ -1,5 +1,7 @@
 import pyotp
 
+from datetime import date
+
 from dj_rest_auth.serializers import UserDetailsSerializer
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
@@ -88,6 +90,14 @@ class CompleteProfileSerializer(serializers.Serializer):
             raise serializers.ValidationError("This username is already taken.")
         return value
 
+    def validate_birthday(self, value):
+        today = date.today()
+        if value >= today:
+            raise serializers.ValidationError("Birthday must be in the past.")
+        if (today - value).days > 365 * 120:
+            raise serializers.ValidationError("Enter a valid date of birth.")
+        return value
+
 
 # ── OTP Verification ──────────────────────────────────────────────────────────
 
@@ -108,7 +118,8 @@ class RegistrationOTPVerifySerializer(serializers.Serializer):
 class CustomUserDetailsSerializer(UserDetailsSerializer):
     """
     Returned on login, registration, and GET/PATCH /auth/user/.
-    Only full_name and birthday are writable — all other fields are read-only.
+    Writable: username, full_name, birthday, profile_picture.
+    Read-only: email and all account-state fields.
     """
 
     class Meta(UserDetailsSerializer.Meta):
@@ -129,8 +140,6 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
         read_only_fields = (
             "id",
             "email",
-            "username",
-            "profile_picture",
             "email_verified",
             "is_staff",
             "is_active",
@@ -138,14 +147,33 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
             "last_login",
         )
 
+    def validate_username(self, value):
+        user = self.context["request"].user
+        if User.objects.filter(username__iexact=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("This username is already taken.")
+        return value
+
+    def validate_birthday(self, value):
+        today = date.today()
+        if value >= today:
+            raise serializers.ValidationError("Birthday must be in the past.")
+        if (today - value).days > 365 * 120:
+            raise serializers.ValidationError("Enter a valid date of birth.")
+        return value
+
 
 # ── Sessions ─────────────────────────────────────────────────────────────────
 
 class UserSessionSerializer(serializers.ModelSerializer):
+    is_current = serializers.SerializerMethodField()
+
     class Meta:
         model = UserSession
-        fields = ("id", "device", "browser", "ip_address", "created_at", "last_active")
-        read_only_fields = fields
+        fields = ("id", "device", "browser", "ip_address", "created_at", "last_active", "is_current")
+        read_only_fields = ("id", "device", "browser", "ip_address", "created_at", "last_active", "is_current")
+
+    def get_is_current(self, obj):
+        return obj.pk == self.context.get("current_session_id")
 
 
 # ── 2FA ──────────────────────────────────────────────────────────────────────
