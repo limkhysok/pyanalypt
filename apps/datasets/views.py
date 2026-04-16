@@ -7,8 +7,8 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.http import HttpResponse
 from django.core.files.base import ContentFile
-from .models import Dataset
-from .serializers import DatasetSerializer
+from .models import Dataset, DatasetActivityLog
+from .serializers import DatasetSerializer, DatasetActivityLogSerializer
 from apps.core.data_engine import load_data, generate_summary_stats
 
 ERR_UNSUPPORTED_FORMAT = "Unsupported format."
@@ -24,7 +24,15 @@ class CreateDatasetView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        instance = serializer.save(user=self.request.user)
+        # Log upload
+        DatasetActivityLog.objects.create(
+            user=self.request.user,
+            dataset=instance,
+            dataset_name_snap=instance.file_name,
+            action="UPLOAD",
+            details={"format": instance.file_format, "size": instance.file_size},
+        )
 
 
 class DatasetViewSet(
@@ -50,6 +58,16 @@ class DatasetViewSet(
 
     def get_queryset(self):
         return Dataset.objects.filter(user=self.request.user)
+
+    def _log_activity(self, dataset, action, details=None):
+        """Helper to create activity logs."""
+        DatasetActivityLog.objects.create(
+            user=self.request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name if dataset else "N/A",
+            action=action,
+            details=details or {},
+        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -172,6 +190,9 @@ class DatasetViewSet(
 
         dataset.file_name = new_name.strip()
         dataset.save(update_fields=["file_name", "updated_date"])
+        
+        self._log_activity(dataset, "RENAME", {"new_name": dataset.file_name})
+        
         return Response(self.get_serializer(dataset).data)
 
     # ------------------------------------------------------------------
@@ -204,6 +225,8 @@ class DatasetViewSet(
                     {"detail": ERR_UNSUPPORTED_FORMAT},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            self._log_activity(dataset, "PREVIEW", {"rows_requested": row_limit})
 
             return Response(self._get_preview_response(dataset, df, row_limit))
 
@@ -268,6 +291,12 @@ class DatasetViewSet(
 
             dataset.file_size = os.path.getsize(dataset.file.path)
             dataset.save(update_fields=["file_size", "updated_date"])
+
+            self._log_activity(dataset, "UPDATE_CELL", {
+                "row": row_index,
+                "column": column_name,
+                "new_value": str(value)[:100]
+            })
 
             return Response({
                 "detail": "Cell updated.",
@@ -347,6 +376,8 @@ class DatasetViewSet(
                     {"detail": f"Unsupported export format: {export_format}"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            self._log_activity(dataset, "EXPORT", {"format": export_format})
 
             return response
 
@@ -429,6 +460,12 @@ class DatasetViewSet(
             new_dataset.file.save(f"{new_name}{ext}", content, save=False)
             new_dataset.save()
 
+            self._log_activity(source, "DUPLICATE", {
+                "new_dataset_id": new_dataset.id,
+                "new_name": new_name,
+                "target_format": new_format
+            })
+
             return Response(
                 self.get_serializer(new_dataset).data,
                 status=status.HTTP_201_CREATED
@@ -439,4 +476,22 @@ class DatasetViewSet(
                 {"detail": f"Duplication failed: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+    def perform_destroy(self, instance):
+        # Log before the dataset link is nullified by SET_NULL in the model
+        # We use a snapshot of name because SET_NULL will clear dataset FK in logs
+        self._log_activity(instance, "DELETE", {"file_name": instance.file_name})
+        instance.delete()
+
+    @action(detail=False, methods=["get"])
+    def activity_logs(self, request):
+        """GET /datasets/activity_logs/  — list all logs for user's datasets."""
+        logs = DatasetActivityLog.objects.filter(user=request.user)
+        # Optional filtering by dataset
+        dataset_id = request.query_params.get("dataset")
+        if dataset_id:
+            logs = logs.filter(dataset_id=dataset_id)
+            
+        serializer = DatasetActivityLogSerializer(logs, many=True)
+        return Response(serializer.data)
 

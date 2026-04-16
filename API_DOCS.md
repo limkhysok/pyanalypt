@@ -781,6 +781,30 @@ Clone an existing dataset into a new record. Supports on-the-fly format conversi
 
 - **Response (201 Created)**: Updated `Dataset` object of the new clone.
 
+### 11. Activity Logs
+Retrieve a stream of activities performed on datasets (uploads, deletes, renames, etc.).
+
+- **Endpoint**: `GET /datasets/activity_logs/`
+- **Auth Required**: Yes
+- **Query Params**: `?dataset={id}` *(optional: filter logs by a specific dataset)*
+- **Response (200 OK)**:
+```json
+[
+  {
+    "id": 42,
+    "user": 1,
+    "dataset": 15,
+    "dataset_name_snap": "survey.csv",
+    "action": "UPLOAD",
+    "details": {
+      "format": "csv",
+      "size": 1048576
+    },
+    "timestamp": "2026-03-17T10:00:00Z"
+  }
+]
+```
+
 ---
 
 ## ⚠️ Issue Management

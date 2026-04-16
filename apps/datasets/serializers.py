@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Dataset
+from .models import Dataset, DatasetActivityLog
 
 
 class DatasetSerializer(serializers.ModelSerializer):
@@ -23,3 +23,9 @@ class DatasetSerializer(serializers.ModelSerializer):
             "uploaded_date",
             "updated_date",
         )
+
+
+class DatasetActivityLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DatasetActivityLog
+        fields = "__all__"
