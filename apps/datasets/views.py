@@ -1,10 +1,12 @@
 import os
 import pandas as pd
 import json
+import sqlite3
 from rest_framework import mixins, viewsets, permissions, generics, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.http import HttpResponse
+from django.core.files.base import ContentFile
 from .models import Dataset
 from .serializers import DatasetSerializer
 from apps.core.data_engine import load_data, generate_summary_stats
@@ -62,6 +64,29 @@ class DatasetViewSet(
             return pd.read_json(path)
         if file_format == "parquet":
             return pd.read_parquet(path)
+        if file_format == "sql":
+            # 1. Connect to in-memory SQLite
+            conn = sqlite3.connect(":memory:")
+            try:
+                # 2. Execute the script
+                with open(path, "r", encoding="utf-8") as f:
+                    conn.executescript(f.read())
+                
+                # 3. Find the first table name
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                tables = cursor.fetchall()
+                if not tables:
+                    return None
+                
+                table_name = tables[0][0]
+                # 4. Load into DataFrame
+                df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+                return df
+            except Exception:
+                return None
+            finally:
+                conn.close()
         return None
 
     def _save_dataframe(self, df, path, file_format):
@@ -73,6 +98,15 @@ class DatasetViewSet(
             df.to_json(path, orient="records")
         elif file_format == "parquet":
             df.to_parquet(path, index=False)
+        elif file_format == "sql":
+            # Generate a SQL script file
+            conn = sqlite3.connect(":memory:")
+            table_name = "dataset"
+            df.to_sql(table_name, conn, index=False)
+            with open(path, "w", encoding="utf-8") as f:
+                for line in conn.iterdump():
+                    f.write(f"{line}\n")
+            conn.close()
 
     def _get_preview_response(self, dataset, df, row_limit=10):
         preview_df = df.head(row_limit)
@@ -294,6 +328,20 @@ class DatasetViewSet(
                 buf.seek(0)
                 response = HttpResponse(buf.getvalue(), content_type="application/octet-stream")
                 response["Content-Disposition"] = f'attachment; filename="{base_name}.parquet"'
+            elif export_format == "sql":
+                # Create an in-memory SQL dump
+                conn = sqlite3.connect(":memory:")
+                # Sanitize table name (replace spaces/special chars)
+                table_name = "".join(e for e in base_name if e.isalnum()) or "dataset"
+                df.to_sql(table_name, conn, index=False)
+                
+                buf = io.StringIO()
+                for line in conn.iterdump():
+                    buf.write(f"{line}\n")
+                
+                response = HttpResponse(buf.getvalue(), content_type="application/sql")
+                response["Content-Disposition"] = f'attachment; filename="{base_name}.sql"'
+                conn.close()
             else:
                 return Response(
                     {"detail": f"Unsupported export format: {export_format}"},
@@ -305,6 +353,90 @@ class DatasetViewSet(
         except Exception as e:
             return Response(
                 {"detail": f"Export failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    # ------------------------------------------------------------------
+    # Duplicate
+    # ------------------------------------------------------------------
+
+    @action(detail=True, methods=["post"])
+    def duplicate(self, request, pk=None):
+        """
+        POST /datasets/{id}/duplicate/
+        Body: { "new_file_name": "Copy of Data", "format": "parquet" }
+        """
+        source = self.get_object()
+        new_name = request.data.get("new_file_name")
+        new_format = request.data.get("format", source.file_format).lower()
+
+        if not new_name:
+            new_name = f"{source.file_name}_copy"
+
+        try:
+            # 1. Load data from source
+            df = self._load_dataframe(source.file.path, source.file_format)
+            if df is None:
+                return Response(
+                    {"detail": "Failed to load source data."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # 2. Prepare the new file in memory
+            import io
+            if new_format == "csv":
+                buf = io.StringIO()
+                df.to_csv(buf, index=False)
+                content = ContentFile(buf.getvalue().encode("utf-8"))
+            elif new_format == "json":
+                buf = io.StringIO()
+                df.to_json(buf, orient="records")
+                content = ContentFile(buf.getvalue().encode("utf-8"))
+            elif new_format == "xlsx":
+                buf = io.BytesIO()
+                df.to_excel(buf, index=False)
+                content = ContentFile(buf.getvalue())
+            elif new_format == "parquet":
+                buf = io.BytesIO()
+                df.to_parquet(buf, index=False)
+                content = ContentFile(buf.getvalue())
+            elif new_format == "sql":
+                buf = io.StringIO()
+                conn = sqlite3.connect(":memory:")
+                # Sanitize table name
+                table_name = "".join(e for e in new_name if e.isalnum()) or "dataset"
+                df.to_sql(table_name, conn, index=False)
+                for line in conn.iterdump():
+                    buf.write(f"{line}\n")
+                content = ContentFile(buf.getvalue().encode("utf-8"))
+                conn.close()
+            else:
+                return Response(
+                    {"detail": f"Unsupported format: {new_format}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # 3. Create new Dataset instance
+            new_dataset = Dataset(
+                user=self.request.user,
+                file_name=new_name,
+                file_format=new_format,
+                parent=source,
+                is_cleaned=source.is_cleaned
+            )
+            # 4. Save the file (Django handles the path naming)
+            ext = f".{new_format}"
+            new_dataset.file.save(f"{new_name}{ext}", content, save=False)
+            new_dataset.save()
+
+            return Response(
+                self.get_serializer(new_dataset).data,
+                status=status.HTTP_201_CREATED
+            )
+
+        except Exception as e:
+            return Response(
+                {"detail": f"Duplication failed: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 

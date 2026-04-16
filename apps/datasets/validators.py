@@ -15,6 +15,6 @@ def validate_file_size_and_type(value):
 
     # Extension Check
     ext = os.path.splitext(value.name)[1]
-    valid_extensions = [".csv", ".xlsx", ".json", ".parquet"]
+    valid_extensions = [".csv", ".xlsx", ".json", ".parquet", ".sql"]
     if ext.lower() not in valid_extensions:
-        raise ValidationError("Unsupported file extension. Use CSV, XLSX, JSON, or Parquet.")
+        raise ValidationError("Unsupported file extension. Use CSV, XLSX, JSON, Parquet, or SQL.")

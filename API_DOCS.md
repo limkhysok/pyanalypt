@@ -653,7 +653,7 @@ Standard multipart/form-data upload.
 - **Endpoint**: `POST /datasets/upload/`
 - **Auth Required**: Yes
 - **Request (Form Data)**:
-  - `file`: The `.csv`, `.xlsx`, `.json`, or `.parquet` file.
+  - `file`: The `.csv`, `.xlsx`, `.json`, `.parquet`, or `.sql` file.
 - **Response (201 Created)**: The newly created `Dataset` object.
 
 ### 2. List All Datasets
@@ -703,7 +703,7 @@ Rename the display file name of a dataset.
 - **Response (200 OK)**: Updated `Dataset` object.
 
 ### 6. Preview Dataframe
-Get the first N rows of the dataset for inspection.
+Get the first N rows of the dataset for inspection. Supports CSV, XLSX, JSON, Parquet, and SQL.
 
 - **Endpoint**: `GET /datasets/{id}/preview/`
 - **Auth Required**: Yes
@@ -737,7 +737,7 @@ Download the dataset in a requested format.
 
 - **Endpoint**: `GET /datasets/{id}/export/`
 - **Auth Required**: Yes
-- **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`, `parquet`; defaults to original format)*
+- **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`, `parquet`, `sql`; defaults to original format)*
 
 ### 9. AI Data Analysis (Ollama)
 Generate "problem statements" or analysis goals for the dataset using a local Ollama AI model. This endpoint analyzes column metadata (names, types, missing values, unique values) to provide AI-generated insights.
@@ -764,6 +764,22 @@ Content-Type: application/json
 }
 ```
 > **Note**: This requires a local Ollama instance running with the `llama3` model (configurable in `config/settings.py`).
+
+### 10. Duplicate Dataset
+Clone an existing dataset into a new record. Supports on-the-fly format conversion and maintains data lineage through the `parent` field.
+
+- **Endpoint**: `POST /datasets/{id}/duplicate/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "new_file_name": "Sales Copy",
+  "format": "sql"
+}
+```
+> **Note**: Both fields are optional. `new_file_name` defaults to `<original>_copy` and `format` defaults to the source dataset's format.
+
+- **Response (201 Created)**: Updated `Dataset` object of the new clone.
 
 ---
 
