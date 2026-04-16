@@ -751,10 +751,7 @@ Retrieve a stream of activities performed on datasets. Logged actions: `UPLOAD`,
     "dataset": 15,
     "dataset_name_snap": "survey.csv",
     "action": "UPLOAD",
-    "details": {
-      "format": "csv",
-      "size": 1048576
-    },
+    "details": {},
     "timestamp": "2026-03-17T10:00:00Z"
   }
 ]
@@ -762,195 +759,111 @@ Retrieve a stream of activities performed on datasets. Logged actions: `UPLOAD`,
 
 ---
 
-## ⚠️ Issue Management
+## 🧪 Datalab (EDA & Wrangling)
 
-All endpoints below are under `/api/v1/issues/`.
+The Datalab centralizes **Exploratory Data Analysis (EDA)** and **Data Wrangling** operations. It replaces the separate `issues` and `cleaning` modules.
 
-### Issue Object Schema
+All endpoints below are under `/api/v1/datalab/`.
 
-| Field | Type | Description |
-|---|---|---|
-| `id` | int | Unique identifier |
-| `dataset` | int | FK to the parent Dataset |
-| `issue_type` | string | See type choices below |
-| `column_name` | string | Column where the issue was detected (empty = dataset-level) |
-| `row_index` | int\|null | Specific row index (cell-level issues only) |
-| `affected_rows` | int\|null | Number of rows affected (column-level issues) |
-| `description` | string | Human-readable explanation |
-| `suggested_fix` | string | Recommended action |
-| `detected_at` | datetime | Timestamp of detection |
+### 1. Exploratory Data Analysis (EDA)
 
-**Issue Type Choices**: `MISSING_VALUE` | `DUPLICATE` | `OUTLIER` | `SEMANTIC_ERROR` | `DATA_TYPE` | `INCONSISTENT_FORMATTING` | `INVALID_VALUE` | `WHITESPACE_ISSUE` | `SPECIAL_CHAR_ENCODING` | `INCONSISTENT_NAMING` | `LOGICAL_INCONSISTENCY`
-
-### 1. Run Diagnosis Scan
-Trigger a Pandas-based scan on a dataset to detect dirty data. Results are saved as `Issue` records and returned grouped by column. Re-scanning **replaces** all previous issues.
-
-The response includes a full **dataset overview** (shape, data types, null counts, duplicate rows, and numeric `describe()` stats) so the frontend can display summary info alongside the issues.
-
-**Scanners run automatically**:
-| Scanner | Issue Type | What it detects |
-|---|---|---|
-| Missing values | `MISSING_VALUE` | Null / NaN cells per column |
-| Duplicates | `DUPLICATE` | Exact duplicate rows |
-| Type inconsistencies | `DATA_TYPE` | Mixed Python types in a column |
-| Outliers | `OUTLIER` | Z-score > 3 in numeric columns |
-| Inconsistent formatting | `INCONSISTENT_FORMATTING` | Mixed date formats (e.g. YYYY-MM-DD vs MM/DD/YYYY) |
-| Invalid values | `INVALID_VALUE` | Negative numbers in columns like age, price, salary |
-| Whitespace issues | `WHITESPACE_ISSUE` | Leading/trailing/extra spaces in strings |
-| Encoding issues | `SPECIAL_CHAR_ENCODING` | Mojibake / garbled characters (Ã©, â€™, ï¿½) |
-| Inconsistent naming | `INCONSISTENT_NAMING` | Same category in mixed case (Male vs male vs MALE) |
-| Logical inconsistencies | `LOGICAL_INCONSISTENCY` | start_date > end_date, min > max |
-
-- **Endpoint**: `POST /issues/diagnose/{dataset_id}/`
+#### A. Run Diagnostic Scan
+Trigger a deep scan of the dataset to identify quality issues.
+- **Endpoint**: `POST /datalab/eda/diagnose/{dataset_id}/`
 - **Auth Required**: Yes
-- **Request Body**: *(empty — no parameters needed)*
 - **Response (200 OK)**:
 ```json
 {
   "dataset_id": 15,
   "overview": {
-    "shape": { "rows": 1000, "columns": 8 },
+    "shape": { "rows": 1000, "columns": 5 },
     "duplicate_rows": 5,
-    "total_missing": 23,
-    "columns": {
-      "Name": { "dtype": "object", "non_null_count": 1000, "null_count": 0 },
-      "Age": { "dtype": "int64", "non_null_count": 988, "null_count": 12 },
-      "Salary": { "dtype": "float64", "non_null_count": 989, "null_count": 11 },
-      "Department": { "dtype": "object", "non_null_count": 1000, "null_count": 0 },
-      "Join_Date": { "dtype": "object", "non_null_count": 1000, "null_count": 0 }
-    },
-    "numeric_summary": {
-      "Age": {
-        "count": 988.0,
-        "mean": 35.42,
-        "std": 12.15,
-        "min": 18.0,
-        "25%": 26.0,
-        "50%": 34.0,
-        "75%": 44.0,
-        "max": 65.0
-      },
-      "Salary": {
-        "count": 989.0,
-        "mean": 72500.50,
-        "std": 25000.75,
-        "min": 30000.0,
-        "25%": 52000.0,
-        "50%": 70000.0,
-        "75%": 90000.0,
-        "max": 150000.0
-      }
-    }
+    "total_missing": 23
   },
-  "total_issues": 7,
-  "issues_by_column": {
-    "Age": [
-      {
-        "id": 42,
-        "issue_type": "MISSING_VALUE",
-        "affected_rows": 12,
-        "description": "'Age' has 12 missing value(s).",
-        "suggested_fix": "Use the 'handle_na' operation to fill or drop these rows."
-      },
-      {
-        "id": 43,
-        "issue_type": "OUTLIER",
-        "affected_rows": 2,
-        "description": "'Age' has 2 outlier(s) with Z-score > 3.",
-        "suggested_fix": "Use 'outlier_clip' to bound these values."
-      }
-    ],
-    "Salary": [
-      {
-        "id": 45,
-        "issue_type": "MISSING_VALUE",
-        "affected_rows": 11,
-        "description": "'Salary' has 11 missing value(s).",
-        "suggested_fix": "Use the 'handle_na' operation to fill or drop these rows."
-      }
-    ],
-    "Department": [
-      {
-        "id": 46,
-        "issue_type": "INCONSISTENT_NAMING",
-        "affected_rows": 15,
-        "description": "'Department' has inconsistent naming: 'Sales' / 'sales'.",
-        "suggested_fix": "Standardize values to a consistent case (e.g. Title Case)."
-      }
-    ],
-    "Join_Date": [
-      {
-        "id": 47,
-        "issue_type": "INCONSISTENT_FORMATTING",
-        "affected_rows": null,
-        "description": "'Join_Date' has mixed date formats: MM/DD/YYYY, YYYY-MM-DD.",
-        "suggested_fix": "Standardize all dates to a single format (e.g. YYYY-MM-DD)."
-      }
-    ],
-    "__dataset__": [
-      {
-        "id": 44,
-        "issue_type": "DUPLICATE",
-        "affected_rows": 5,
-        "description": "Found 5 exact duplicate row(s) across the dataset.",
-        "suggested_fix": "Use the 'drop_duplicates' operation."
-      }
-    ]
-  }
+  "total_issues": 12,
+  "issues": [
+    {
+      "id": 101,
+      "issue_type": "MISSING_VALUE",
+      "column_name": "Salary",
+      "affected_rows": 12,
+      "description": "'Salary' has 12 missing value(s).",
+      "suggested_fix": "Use 'fill_na' to handle these."
+    }
+  ]
 }
 ```
 
-### 2. List Issues for a Dataset
-Get all issues for a specific dataset, scoped to the authenticated user.
-
-- **Endpoint**: `GET /issues/?dataset={id}`
-- **Auth Required**: Yes
-- **Response**: Array of Issue objects.
-
-### 3. Get Single Issue
-- **Endpoint**: `GET /issues/{id}/`
-- **Auth Required**: Yes
-
-### 4. Update an Issue
-Edit writable fields (e.g. `suggested_fix`, `description`).
-
-- **Endpoint**: `PATCH /issues/{id}/`
-- **Auth Required**: Yes
-- **Request Body** *(any subset of writable fields)*:
-```json
-{
-  "issue_type": "INVALID_VALUE",
-  "suggested_fix": "Drop these rows manually."
-}
-```
-
-### 5. Delete an Issue
-- **Endpoint**: `DELETE /issues/{id}/`
-- **Auth Required**: Yes
-
-### 6. Issue Summary / Stats
-Get aggregated issue counts for a dataset, grouped by type and column.
-
-- **Endpoint**: `GET /issues/summary/{dataset_id}/`
+#### B. Issue Summary
+Get a high-level summary of issues grouped by type and column.
+- **Endpoint**: `GET /datalab/eda/summary/{dataset_id}/`
 - **Auth Required**: Yes
 - **Response (200 OK)**:
 ```json
 {
   "dataset_id": 15,
-  "total_issues": 5,
-  "by_type": {
-    "MISSING_VALUE": 2,
-    "DUPLICATE": 1,
-    "OUTLIER": 2
-  },
-  "by_column": {
-    "email": 1,
-    "age": 2,
-    "salary": 1
-  },
-  "dataset_level_issues": 1
+  "total_issues": 12,
+  "by_type": { "MISSING_VALUE": 5, "OUTLIER": 2 },
+  "by_column": { "Salary": 3, "Age": 2 }
 }
 ```
+
+---
+
+### 2. Data Wrangling
+
+#### A. Preview Wrangle Operation
+See the effect of a transformation before committing it.
+- **Endpoint**: `POST /datalab/wrangle/preview/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "dataset": 15,
+  "operation_type": "FILL_NA",
+  "column_name": "Salary",
+  "parameters": { "value": 0 }
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "summary": { "total_rows": 1000, "missing_values": { "Salary": 0 } },
+  "sample": [ { "Name": "John", "Salary": 0 } ]
+}
+```
+
+#### B. Apply Wrangle Operation
+Apply a transformation and save the result to the dataset.
+- **Endpoint**: `POST /datalab/wrangle/apply/{dataset_id}/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "operation_type": "DROP_DUPLICATES",
+  "column_name": "",
+  "parameters": {}
+}
+```
+- **Response (200 OK)**:
+```json
+{
+  "id": 50,
+  "operation_type": "DROP_DUPLICATES",
+  "status": "APPLIED",
+  "rows_affected": 5
+}
+```
+
+---
+
+### Enums & Choices
+
+**Issue Types (`issue_type`)**:
+`MISSING_VALUE`, `DUPLICATE`, `OUTLIER`, `DATA_TYPE`, `INCONSISTENT_FORMATTING`, `INVALID_VALUE`, `WHITESPACE_ISSUE`, `SPECIAL_CHAR_ENCODING`, `INCONSISTENT_NAMING`, `LOGICAL_INCONSISTENCY`
+
+**Wrangle Operations (`operation_type`)**:
+`FILL_NA`, `DROP_ROWS`, `DROP_DUPLICATES`, `CLIP_OUTLIERS`, `REMOVE_OUTLIERS`, `CAST_COLUMN`, `STANDARDIZE_FORMAT`, `REPLACE_VALUES`, `STRIP_WHITESPACE`, `FIX_ENCODING`, `STANDARDIZE_CASE`, `RENAME_COLUMN`
 
 ---
 
@@ -966,77 +879,9 @@ Get aggregated issue counts for a dataset, grouped by type and column.
 | Code | Meaning | Description |
 |------|---------|-------------|
 | 200 | OK | Request successful |
-| 201 | Created | User created successfully |
-| 202 | Accepted | Credentials valid but action pending — 2FA code required to complete login |
+| 201 | Created | Resource created successfully |
 | 400 | Bad Request | Validation error or missing fields |
 | 401 | Unauthorized | Invalid or expired token |
 | 403 | Forbidden | Permissions mapping error |
 | 404 | Not Found | Resource not found |
-| 500 | Internal Server Error | Server-side crash |
-
----
-
-## 🧹 Cleaning Operations
-
-All endpoints below are under `/api/v1/cleaning/`.
-
-### CleaningOperation Object Schema
-
-| Field           | Type    | Description                                      |
-|-----------------|---------|--------------------------------------------------|
-| `id`            | int     | Unique identifier                                |
-| `dataset`       | int     | FK to the parent Dataset                         |
-| `issue`         | int\|null | FK to the related Issue (nullable)               |
-| `operation_type`| string  | Cleaning operation type (see choices below)      |
-| `column_name`   | string  | Column affected (blank for dataset-level ops)    |
-| `parameters`    | object  | Operation parameters (varies by type)            |
-| `rows_affected` | int\|null | Number of rows affected (if known)               |
-| `status`        | string  | PENDING, APPLIED, FAILED, REVERTED               |
-| `applied_at`    | datetime\|null | When operation was applied (if any)         |
-| `created_at`    | datetime| When operation was created                       |
-
-**Operation Type Choices:**
-`FILL_NA` | `DROP_ROWS` | `DROP_DUPLICATES` | `CLIP_OUTLIERS` | `REMOVE_OUTLIERS` | `CAST_COLUMN` | `STANDARDIZE_FORMAT` | `REPLACE_VALUES` | `STRIP_WHITESPACE` | `FIX_ENCODING` | `STANDARDIZE_CASE` | `RENAME_COLUMN`
-
-### 1. List Cleaning Operations
-- **Endpoint**: `GET /cleaning/?dataset={id}`
-- **Auth Required**: Yes
-- **Response (200 OK)**: Array of CleaningOperation objects
-
-### 2. Create (Apply) a Cleaning Operation
-- **Endpoint**: `POST /cleaning/`
-- **Auth Required**: Yes
-- **Request Body**:
-```json
-{
-  "dataset": 1,
-  "issue": 101,
-  "operation_type": "FILL_NA",
-  "column_name": "Salary",
-  "parameters": { "method": "mean" }
-}
-```
-- **Response (201 Created)**: CleaningOperation object (status will be PENDING or APPLIED)
-
-### 3. Revert a Cleaning Operation
-- **Endpoint**: `POST /cleaning/{id}/revert/`
-- **Auth Required**: Yes
-- **Response (200 OK)**:
-```json
-{
-  "detail": "Operation reverted (not actually implemented)."
-}
-```
-
-### 4. Preview a Cleaning Operation
-- **Endpoint**: `POST /cleaning/preview/`
-- **Auth Required**: Yes
-- **Request Body**: Same as create
-- **Response (501 Not Implemented)**:
-```json
-{
-  "detail": "Preview not implemented yet."
-}
-```
-
 ---

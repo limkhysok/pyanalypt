@@ -150,6 +150,47 @@ For `POST /auth/2fa/verify-login/` specifically, the 10/hour limit is per IP —
 
 ---
 
+## 6. Datalab Consolidation (EDA & Wrangling)
+
+### What changed
+The `issues` and `cleaning` modules have been consolidated into a single entity called **Datalab**.
+- All `/api/v1/issues/` and `/api/v1/cleaning/` endpoints are **removed** (404).
+- New endpoints for **EDA** (Exploratory Data Analysis) and **Wrangling** are available under `/api/v1/datalab/`.
+
+### What you must update
+
+**1. Point to new endpoints**
+
+| Feature | Old Endpoint | New Endpoint |
+|---|---|---|
+| Run Diagnosis | `POST /issues/diagnose/{id}/` | `POST /datalab/eda/diagnose/{id}/` |
+| Issue Summary | `GET /issues/summary/{id}/` | `GET /datalab/eda/summary/{id}/` |
+| Preview Operation | `POST /cleaning/preview/` | `POST /datalab/wrangle/preview/` |
+| Apply Operation | `POST /cleaning/` | `POST /datalab/wrangle/apply/{id}/` |
+
+**2. Update Data Objects**
+The `Issue` object is now called `DatalabIssue` and the `CleaningOperation` is now `WrangleOperation`.
+
+- **DatalabIssue**: `related_name` in dataset response has changed from `issues` to `datalab_issues`.
+- **WrangleOperation**: `related_name` in dataset response has changed from `cleaning_ops` to `wrangle_ops`.
+
+**3. Use the new response format for Diagnosis**
+The `POST /datalab/eda/diagnose/{id}/` response now returns a flat `issues` array instead of `issues_by_column` grouping. Grouping should now be handled on the frontend if needed.
+
+```json
+{
+  "dataset_id": 15,
+  "overview": { ... },
+  "total_issues": 12,
+  "issues": [ { "id": 1, ... }, { "id": 2, ... } ]
+}
+```
+
+**4. Update Enum references**
+Ensure all references to "Cleaning" are renamed to "Wrangling" in the UI to match the new "Datalab" concept.
+
+---
+
 ## Summary Checklist
 
 - [ ] Add `old_password` field to the change-password form
@@ -165,3 +206,7 @@ For `POST /auth/2fa/verify-login/` specifically, the 10/hour limit is per IP —
 - [ ] Add client-side validation for each field (see Section 4 rules)
 - [ ] Handle per-field `400` errors inline
 - [ ] Handle `429` on all four 2FA endpoints
+- [ ] Update all API calls from `/issues/` and `/cleaning/` to `/datalab/`
+- [ ] Update data handling for `datalab_issues` and `wrangle_ops` in dataset state
+- [ ] Rename "Cleaning" to "Wrangling" across the UI
+- [ ] Handle flat `issues` array in Diagnosis response

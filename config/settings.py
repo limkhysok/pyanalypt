@@ -65,8 +65,7 @@ INSTALLED_APPS = [
     "apps.users",
     "apps.core",
     "apps.datasets",
-    "apps.issues",
-    "apps.cleaning",
+    "apps.datalab",
     "apps.datasetframe",
 ]
 
