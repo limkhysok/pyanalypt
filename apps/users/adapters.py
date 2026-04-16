@@ -10,8 +10,10 @@ from allauth.account.adapter import DefaultAccountAdapter
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 
-User = get_user_model()
 from .utils import sanitize_username
+
+User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 def _generate_unique_username(email):
@@ -86,9 +88,17 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
     def _extract_google_picture(self, user, extra_data):
         picture_url = extra_data.get("picture", "")
         if picture_url:
-            if picture_url.startswith("http://"):
-                picture_url = picture_url.replace("http://", "https://")
-            user.profile_picture = picture_url
+            import requests
+            from django.core.files.base import ContentFile
+
+            try:
+                response = requests.get(picture_url, timeout=10)
+                if response.status_code == 200:
+                    # Use the filename from URL or a generic one
+                    filename = f"google_avatar_{user.email.split('@')[0]}.jpg"
+                    user.profile_picture.save(filename, ContentFile(response.content), save=False)
+            except Exception as e:
+                logger.error("Failed to download Google profile picture for %s: %s", user.email, e)
 
     def _verify_google_email(self, user, extra_data):
         if extra_data.get("verified_email", False) or extra_data.get(

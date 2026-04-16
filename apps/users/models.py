@@ -77,17 +77,11 @@ class AuthUser(AbstractUser):
         help_text="Indicates whether the user's email has been verified.",
     )
 
-    profile_picture = models.URLField(
-        max_length=1024,
+    profile_picture = models.ImageField(
+        upload_to="profile_pics/",
         null=True,
         blank=True,
-        validators=[
-            RegexValidator(
-                regex=r"^https://.*",
-                message="Profile picture URL must use HTTPS protocol for security.",
-            ),
-        ],
-        help_text="URL to the user's profile picture (typically from Google OAuth or uploaded to CDN).",
+        help_text="User's profile picture (auto-cropped to 1:1).",
     )
 
     # ── Two-Factor Authentication ────────────────────────────────────────────
@@ -119,7 +113,32 @@ class AuthUser(AbstractUser):
     def save(self, *args, **kwargs):
         if self.email:
             self.email = self.email.lower()
+        
         super().save(*args, **kwargs)
+
+        # Image processing: Square cropping (1:1)
+        if self.profile_picture:
+            from PIL import Image
+            import os
+
+            img_path = self.profile_picture.path
+            if os.path.exists(img_path):
+                img = Image.open(img_path)
+                
+                # If image is not square, crop it
+                width, height = img.size
+                if width != height:
+                    min_dim = min(width, height)
+                    left = (width - min_dim) / 2
+                    top = (height - min_dim) / 2
+                    right = (width + min_dim) / 2
+                    bottom = (height + min_dim) / 2
+                    
+                    img = img.crop((left, top, right, bottom))
+                    
+                    # Resize to a reasonable standard (e.g. 512x512)
+                    img.thumbnail((512, 512), Image.LANCZOS)
+                    img.save(img_path)
 
     @property
     def display_name(self):
