@@ -759,111 +759,99 @@ Retrieve a stream of activities performed on datasets. Logged actions: `UPLOAD`,
 
 ---
 
-## 🧪 Datalab (EDA & Wrangling)
+## 🧪 Datalab
 
-The Datalab centralizes **Exploratory Data Analysis (EDA)** and **Data Wrangling** operations. It replaces the separate `issues` and `cleaning` modules.
+The Datalab provides **dataset inspection** — view the raw data as a table and check structural metadata (`shape`, `dtypes`, `info`).
 
 All endpoints below are under `/api/v1/datalab/`.
 
-### 1. Exploratory Data Analysis (EDA)
+> **⚠️ Frontend Migration Notice**
+>
+> The following endpoints have been **removed**:
+> - ~~`POST /datalab/eda/diagnose/{dataset_id}/`~~
+> - ~~`GET /datalab/eda/summary/{dataset_id}/`~~
+> - ~~`POST /datalab/wrangle/preview/`~~
+> - ~~`POST /datalab/wrangle/apply/{dataset_id}/`~~
+>
+> Remove any UI components, API calls, or state related to EDA issue scanning, issue summaries, wrangling previews, and wrangling apply. The `DatalabIssue` and `WrangleOperation` data models no longer exist.
+>
+> **New endpoints to implement:**
+> - `GET /datalab/preview/{dataset_id}/` — render dataset as a data table
+> - `GET /datalab/inspect/{dataset_id}/` — display shape, dtypes, and column info panel
 
-#### A. Run Diagnostic Scan
-Trigger a deep scan of the dataset to identify quality issues.
-- **Endpoint**: `POST /datalab/eda/diagnose/{dataset_id}/`
+---
+
+### 1. Preview Dataset as Table
+
+Returns the full dataset rendered as rows and columns for display in a data table component.
+
+- **Endpoint**: `GET /datalab/preview/{dataset_id}/`
 - **Auth Required**: Yes
 - **Response (200 OK)**:
 ```json
 {
-  "dataset_id": 15,
-  "overview": {
-    "shape": { "rows": 1000, "columns": 5 },
-    "duplicate_rows": 5,
-    "total_missing": 23
+  "columns": ["Name", "Age", "Salary"],
+  "rows": [
+    { "Name": "Alice", "Age": 30, "Salary": 50000 },
+    { "Name": "Bob", "Age": null, "Salary": 62000 }
+  ],
+  "total_rows": 1000,
+  "total_columns": 3
+}
+```
+
+> `null` is used for missing values (`NaN`). The `columns` array preserves the original column order.
+
+---
+
+### 2. Inspect DataFrame Metadata
+
+Returns the equivalent of `df.shape`, `df.dtypes`, and `df.info()` for the dataset.
+
+- **Endpoint**: `GET /datalab/inspect/{dataset_id}/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+{
+  "shape": {
+    "rows": 1000,
+    "columns": 3
   },
-  "total_issues": 12,
-  "issues": [
-    {
-      "id": 101,
-      "issue_type": "MISSING_VALUE",
-      "column_name": "Salary",
-      "affected_rows": 12,
-      "description": "'Salary' has 12 missing value(s).",
-      "suggested_fix": "Use 'fill_na' to handle these."
-    }
-  ]
+  "dtypes": {
+    "Name": "object",
+    "Age": "float64",
+    "Salary": "int64"
+  },
+  "info": {
+    "text": "<class 'pandas.core.frame.DataFrame'>\nRangeIndex: 1000 entries...",
+    "columns": [
+      {
+        "column": "Name",
+        "dtype": "object",
+        "non_null_count": 1000,
+        "null_count": 0
+      },
+      {
+        "column": "Age",
+        "dtype": "float64",
+        "non_null_count": 988,
+        "null_count": 12
+      },
+      {
+        "column": "Salary",
+        "dtype": "int64",
+        "non_null_count": 1000,
+        "null_count": 0
+      }
+    ],
+    "memory_usage_bytes": 24128
+  }
 }
 ```
 
-#### B. Issue Summary
-Get a high-level summary of issues grouped by type and column.
-- **Endpoint**: `GET /datalab/eda/summary/{dataset_id}/`
-- **Auth Required**: Yes
-- **Response (200 OK)**:
-```json
-{
-  "dataset_id": 15,
-  "total_issues": 12,
-  "by_type": { "MISSING_VALUE": 5, "OUTLIER": 2 },
-  "by_column": { "Salary": 3, "Age": 2 }
-}
-```
-
----
-
-### 2. Data Wrangling
-
-#### A. Preview Wrangle Operation
-See the effect of a transformation before committing it.
-- **Endpoint**: `POST /datalab/wrangle/preview/`
-- **Auth Required**: Yes
-- **Request Body**:
-```json
-{
-  "dataset": 15,
-  "operation_type": "FILL_NA",
-  "column_name": "Salary",
-  "parameters": { "value": 0 }
-}
-```
-- **Response (200 OK)**:
-```json
-{
-  "summary": { "total_rows": 1000, "missing_values": { "Salary": 0 } },
-  "sample": [ { "Name": "John", "Salary": 0 } ]
-}
-```
-
-#### B. Apply Wrangle Operation
-Apply a transformation and save the result to the dataset.
-- **Endpoint**: `POST /datalab/wrangle/apply/{dataset_id}/`
-- **Auth Required**: Yes
-- **Request Body**:
-```json
-{
-  "operation_type": "DROP_DUPLICATES",
-  "column_name": "",
-  "parameters": {}
-}
-```
-- **Response (200 OK)**:
-```json
-{
-  "id": 50,
-  "operation_type": "DROP_DUPLICATES",
-  "status": "APPLIED",
-  "rows_affected": 5
-}
-```
-
----
-
-### Enums & Choices
-
-**Issue Types (`issue_type`)**:
-`MISSING_VALUE`, `DUPLICATE`, `OUTLIER`, `DATA_TYPE`, `INCONSISTENT_FORMATTING`, `INVALID_VALUE`, `WHITESPACE_ISSUE`, `SPECIAL_CHAR_ENCODING`, `INCONSISTENT_NAMING`, `LOGICAL_INCONSISTENCY`
-
-**Wrangle Operations (`operation_type`)**:
-`FILL_NA`, `DROP_ROWS`, `DROP_DUPLICATES`, `CLIP_OUTLIERS`, `REMOVE_OUTLIERS`, `CAST_COLUMN`, `STANDARDIZE_FORMAT`, `REPLACE_VALUES`, `STRIP_WHITESPACE`, `FIX_ENCODING`, `STANDARDIZE_CASE`, `RENAME_COLUMN`
+> `info.text` is the raw string output of `df.info()` — useful for a collapsible raw view.
+> `info.columns` is the structured per-column breakdown — use this to render the info table.
+> `dtypes` mirrors `df.dtypes` as a flat key-value map of column name → dtype string.
 
 ---
 
