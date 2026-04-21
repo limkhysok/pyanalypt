@@ -761,14 +761,14 @@ Retrieve a stream of activities performed on datasets. Logged actions: `UPLOAD`,
 
 ## 🧪 Datalab
 
-The Datalab provides **dataset inspection** — view the raw data as a table and check structural metadata (`shape`, `dtypes`, `info`).
+The Datalab provides **dataset inspection** — view the raw data as a table and check structural metadata per column (dtype, null counts, null percentage, memory usage).
 
 All endpoints below are under `/api/v1/datalab/`.
 
 | # | Method | Endpoint | Description |
 |---|--------|----------|-------------|
 | 1 | `GET` | `/datalab/preview/{dataset_id}/` | Render dataset as a data table |
-| 2 | `GET` | `/datalab/inspect/{dataset_id}/` | Return `df.shape`, `df.dtypes`, `df.info()` |
+| 2 | `GET` | `/datalab/inspect/{dataset_id}/` | Return per-column dtype, null counts, null %, and memory usage |
 
 ---
 
@@ -781,58 +781,56 @@ Returns the full dataset rendered as rows and columns for display in a data tabl
 - **Response (200 OK)**:
 ```json
 {
+  "dataset_id": 15,
+  "file_name": "survey.csv",
+  "file_format": "csv",
+  "dataset_size": "1.0 MB",
+  "total_rows": 1000,
+  "total_columns": 3,
   "columns": ["Name", "Age", "Salary"],
   "rows": [
     { "Name": "Alice", "Age": 30, "Salary": 50000 },
     { "Name": "Bob", "Age": null, "Salary": 62000 }
-  ],
-  "total_rows": 1000,
-  "total_columns": 3
+  ]
 }
 ```
 
 > `null` is used for missing values (`NaN`). The `columns` array preserves the original column order.
+> `dataset_size` is a human-readable string (`B`, `KB`, `MB`, `GB`, `TB`).
 
 ---
 
 ### 2. Inspect DataFrame Metadata
 
-Returns the equivalent of `df.shape`, `df.dtypes`, and `df.info()` for the dataset.
+Returns structured per-column metadata: dtype, null counts, null percentage, and total memory usage.
 
 - **Endpoint**: `GET /datalab/inspect/{dataset_id}/`
 - **Auth Required**: Yes
 - **Response (200 OK)**:
 ```json
 {
-  "shape": {
-    "rows": 1000,
-    "columns": 3
-  },
-  "dtypes": {
-    "Name": "object",
-    "Age": "float64",
-    "Salary": "int64"
-  },
   "info": {
-    "text": "<class 'pandas.core.frame.DataFrame'>\nRangeIndex: 1000 entries...",
     "columns": [
       {
         "column": "Name",
         "dtype": "object",
         "non_null_count": 1000,
-        "null_count": 0
+        "null_count": 0,
+        "null_pct": 0.0
       },
       {
         "column": "Age",
         "dtype": "float64",
         "non_null_count": 988,
-        "null_count": 12
+        "null_count": 12,
+        "null_pct": 1.2
       },
       {
         "column": "Salary",
         "dtype": "int64",
         "non_null_count": 1000,
-        "null_count": 0
+        "null_count": 0,
+        "null_pct": 0.0
       }
     ],
     "memory_usage_bytes": 24128
@@ -840,9 +838,9 @@ Returns the equivalent of `df.shape`, `df.dtypes`, and `df.info()` for the datas
 }
 ```
 
-> `info.text` is the raw string output of `df.info()` — useful for a collapsible raw view.
-> `info.columns` is the structured per-column breakdown — use this to render the info table.
-> `dtypes` mirrors `df.dtypes` as a flat key-value map of column name → dtype string.
+> `info.columns` is the structured per-column breakdown — use this to render the inspect table.
+> `null_pct` is rounded to 1 decimal place (e.g. `1.2` means 1.2% of rows are null for that column).
+> `memory_usage_bytes` is the total deep memory usage of the dataframe in bytes.
 
 ---
 
