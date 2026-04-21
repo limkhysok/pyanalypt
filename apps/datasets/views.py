@@ -4,7 +4,6 @@ import re
 import logging
 import sqlite3
 
-import pandas as pd
 from rest_framework import mixins, viewsets, permissions, generics, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -12,6 +11,8 @@ from rest_framework.decorators import action
 from django.http import HttpResponse
 from django.core.files.base import ContentFile
 from django.shortcuts import get_object_or_404
+
+from apps.core.data_engine import load_dataframe
 from .models import Dataset, DatasetActivityLog
 from .serializers import DatasetSerializer, DatasetActivityLogSerializer
 
@@ -80,37 +81,6 @@ class DatasetViewSet(
             details=details or {},
         )
 
-    def _load_dataframe(self, path, file_format):
-        if file_format == "csv":
-            return pd.read_csv(path)
-        if file_format == "xlsx":
-            return pd.read_excel(path)
-        if file_format == "json":
-            return pd.read_json(path)
-        if file_format == "parquet":
-            return pd.read_parquet(path)
-        if file_format == "sql":
-            conn = sqlite3.connect(SQLITE_MEMORY)
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    conn.executescript(f.read())
-                cursor = conn.cursor()
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-                tables = cursor.fetchall()
-                if not tables:
-                    return None
-                table_name = tables[0][0]
-                # Validate table name to prevent SQL injection
-                if not re.match(r'^[A-Za-z_]\w*$', table_name):
-                    return None
-                return pd.read_sql(f'SELECT * FROM "{table_name}"', conn)
-            except Exception:
-                logger.exception("Failed to load SQL file: %s", path)
-                return None
-            finally:
-                conn.close()
-        return None
-
     @action(detail=True, methods=["patch"])
     def rename(self, request, pk=None):
         dataset = self.get_object()
@@ -131,7 +101,7 @@ class DatasetViewSet(
         base_name = os.path.splitext(dataset.file_name)[0]
 
         try:
-            df = self._load_dataframe(file_path, dataset.file_format)
+            df = load_dataframe(file_path, dataset.file_format)
             if df is None:
                 return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -184,7 +154,7 @@ class DatasetViewSet(
         new_format = request.data.get("format", source.file_format).lower()
 
         try:
-            df = self._load_dataframe(source.file.path, source.file_format)
+            df = load_dataframe(source.file.path, source.file_format)
             if df is None:
                 return Response({"detail": "Failed to load source."}, status=status.HTTP_400_BAD_REQUEST)
 

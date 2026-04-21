@@ -1,10 +1,10 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from django.urls import path
 from .views import DatalabViewSet
 
-router = DefaultRouter()
-router.register(r"", DatalabViewSet, basename="datalab")
+preview = DatalabViewSet.as_view({"get": "preview"})
+inspect = DatalabViewSet.as_view({"get": "inspect"})
 
 urlpatterns = [
-    path("", include(router.urls)),
+    path("preview/<int:dataset_id>/", preview, name="datalab-preview"),
+    path("inspect/<int:dataset_id>/", inspect, name="datalab-inspect"),
 ]

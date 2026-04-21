@@ -5,7 +5,7 @@ from django.http import StreamingHttpResponse
 from django.conf import settings
 
 from apps.datasets.models import Dataset
-from apps.core.data_engine import load_data, generate_summary_stats
+from apps.core.data_engine import load_dataframe, generate_summary_stats
 from apps.core.ollama_client import stream_frame_problem
 from .models import DatasetFrame
 from .serializers import DatasetFrameSerializer
@@ -43,7 +43,7 @@ class DatasetFrameViewSet(viewsets.ReadOnlyModelViewSet):
         except Dataset.DoesNotExist:
             return Response({"detail": "Dataset not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        df = load_data(dataset.file.path)
+        df = load_dataframe(dataset.file.path, dataset.file_format)
         stats = generate_summary_stats(df)
 
         columns = stats.get("columns", [])
@@ -71,7 +71,7 @@ class DatasetFrameViewSet(viewsets.ReadOnlyModelViewSet):
                 clean = "\n".join(
                     line[6:].replace("\\n", "\n")
                     for line in full_result.splitlines()
-                    if line.startswith("data: ") and line[6:] != "[DONE]"
+                    if line.startswith("data: ") and not line.endswith("[DONE]")
                 )
                 DatasetFrame.objects.create(
                     dataset=dataset,

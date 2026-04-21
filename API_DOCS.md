@@ -765,19 +765,10 @@ The Datalab provides **dataset inspection** — view the raw data as a table and
 
 All endpoints below are under `/api/v1/datalab/`.
 
-> **⚠️ Frontend Migration Notice**
->
-> The following endpoints have been **removed**:
-> - ~~`POST /datalab/eda/diagnose/{dataset_id}/`~~
-> - ~~`GET /datalab/eda/summary/{dataset_id}/`~~
-> - ~~`POST /datalab/wrangle/preview/`~~
-> - ~~`POST /datalab/wrangle/apply/{dataset_id}/`~~
->
-> Remove any UI components, API calls, or state related to EDA issue scanning, issue summaries, wrangling previews, and wrangling apply. The `DatalabIssue` and `WrangleOperation` data models no longer exist.
->
-> **New endpoints to implement:**
-> - `GET /datalab/preview/{dataset_id}/` — render dataset as a data table
-> - `GET /datalab/inspect/{dataset_id}/` — display shape, dtypes, and column info panel
+| # | Method | Endpoint | Description |
+|---|--------|----------|-------------|
+| 1 | `GET` | `/datalab/preview/{dataset_id}/` | Render dataset as a data table |
+| 2 | `GET` | `/datalab/inspect/{dataset_id}/` | Return `df.shape`, `df.dtypes`, `df.info()` |
 
 ---
 

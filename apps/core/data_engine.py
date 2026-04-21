@@ -1,31 +1,60 @@
+import io
+import re
+import logging
+import sqlite3
+
 import pandas as pd
 
+logger = logging.getLogger(__name__)
 
-def load_data(file_path):
+SQLITE_MEMORY = ":memory:"
+
+
+def load_dataframe(file_path, file_format):
     """
-    Loads data from a file path into a Pandas DataFrame.
-    Supports CSV and Excel files.
+    Load a file into a DataFrame using the explicit file_format field.
+    Supports: csv, xlsx, xls, json, parquet, sql.
+    Returns None on failure instead of raising, so callers can return 400.
     """
     try:
-        if file_path.endswith(".csv"):
-            df = pd.read_csv(file_path)
-        elif file_path.endswith(".xlsx") or file_path.endswith(".xls"):
-            df = pd.read_excel(file_path)
-        elif file_path.endswith(".parquet"):
-            df = pd.read_parquet(file_path)
-        else:
-            raise ValueError("Unsupported file format")
+        fmt = file_format.lower()
+        if fmt == "csv":
+            return pd.read_csv(file_path)
+        if fmt in ("xlsx", "xls"):
+            return pd.read_excel(file_path)
+        if fmt == "json":
+            return pd.read_json(file_path)
+        if fmt == "parquet":
+            return pd.read_parquet(file_path)
+        if fmt == "sql":
+            return _load_sql(file_path)
+    except Exception:
+        logger.exception("Failed to load dataframe: %s (%s)", file_path, file_format)
+    return None
 
-        # Standardize: clean column names
-        df = clean_columns(df)
-        return df
-    except Exception as e:
-        raise ValueError(f"Error loading file: {str(e)}")
+
+def _load_sql(file_path):
+    conn = sqlite3.connect(SQLITE_MEMORY)
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            conn.executescript(f.read())
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = cursor.fetchall()
+        if not tables:
+            return None
+        table_name = tables[0][0]
+        if not re.match(r"^[A-Za-z_]\w*$", table_name):
+            return None
+        return pd.read_sql(f'SELECT * FROM "{table_name}"', conn)
+    finally:
+        conn.close()
 
 
-def clean_columns(df):
+def normalize_columns(df):
     """
-    Standardizes column names: lowercase, spaces to underscores.
+    Standardize column names to lowercase_with_underscores.
+    Opt-in — not applied automatically by load_dataframe.
     """
     df.columns = (
         df.columns.astype(str)
@@ -38,45 +67,37 @@ def clean_columns(df):
 
 def generate_summary_stats(df):
     """
-    Generates summary statistics for the DataFrame.
-    Returns a dictionary suitable for JSON serialization.
+    Per-column summary statistics suitable for JSON serialization.
     """
     summary = {
         "total_rows": len(df),
-        "columns": [],
         "missing_values": df.isnull().sum().to_dict(),
+        "columns": [],
     }
 
     for col in df.columns:
         col_data = df[col]
-        col_type = (
-            "numeric" if pd.api.types.is_numeric_dtype(col_data) else "categorical"
-        )
+        is_numeric = pd.api.types.is_numeric_dtype(col_data)
 
         col_summary = {
             "name": col,
-            "type": col_type,
-            "missing": int(df[col].isnull().sum()),
-            "unique": int(df[col].nunique()),
+            "type": "numeric" if is_numeric else "categorical",
+            "missing": int(col_data.isnull().sum()),
+            "unique": int(col_data.nunique()),
         }
 
-        if col_type == "numeric":
-            # Drop NaNs for stats calculation
-            valid_data = col_data.dropna()
-            if not valid_data.empty:
-                col_summary.update(
-                    {
-                        "min": float(valid_data.min()),
-                        "max": float(valid_data.max()),
-                        "mean": float(valid_data.mean()),
-                        "median": float(valid_data.median()),
-                        "std": float(valid_data.std()),
-                    }
-                )
+        if is_numeric:
+            valid = col_data.dropna()
+            if not valid.empty:
+                col_summary.update({
+                    "min": float(valid.min()),
+                    "max": float(valid.max()),
+                    "mean": float(valid.mean()),
+                    "median": float(valid.median()),
+                    "std": float(valid.std()),
+                })
         else:
-            # For categorical, maybe top 5 values?
-            top_values = col_data.value_counts().head(5).to_dict()
-            col_summary["top_values"] = top_values
+            col_summary["top_values"] = col_data.value_counts().head(5).to_dict()
 
         summary["columns"].append(col_summary)
 
