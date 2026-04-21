@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
 from apps.datasets.models import Dataset
-from apps.core.data_engine import load_dataframe, save_dataframe, apply_cast, apply_stored_casts, SUPPORTED_CASTS
+from apps.core.data_engine import load_dataframe, save_dataframe, apply_cast, validate_cast, apply_stored_casts, SUPPORTED_CASTS
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +117,39 @@ class DatalabViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        force = request.data.get("force", False)
         results = []
+        validation_warnings = []
+        
+        # Phase 1: Validation
+        col_validated_data = {}
         for col, target in casts.items():
+            status, message = validate_cast(df[col], target)
+            col_validated_data[col] = {"status": status, "message": message}
+            if status == "warning":
+                validation_warnings.append({"column": col, "warning": message})
+            elif status == "error":
+                results.append({
+                    "column": col,
+                    "target": target,
+                    "status": "error",
+                    "detail": message
+                })
+
+        # Phase 2: Handle Warnings (Block if not forced)
+        if validation_warnings and not force:
+            return Response({
+                "detail": "Some conversions are risky. Use 'force: true' to proceed.",
+                "warnings": validation_warnings,
+                "errors": [r for r in results if r["status"] == "error"]
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Phase 3: Apply (only for non-error columns)
+        for col, target in casts.items():
+            # Skip if we already logged an error during validation
+            if any(r["column"] == col and r["status"] == "error" for r in results):
+                continue
+                
             from_dtype = str(df[col].dtype)
             try:
                 df[col] = apply_cast(df[col], target)
@@ -127,13 +158,15 @@ class DatalabViewSet(viewsets.ViewSet):
                     "from_dtype": from_dtype,
                     "to_dtype": str(df[col].dtype),
                     "status": "ok",
+                    "validation": col_validated_data[col]
                 })
             except Exception as exc:
                 results.append({
                     "column": col,
                     "from_dtype": from_dtype,
                     "to_dtype": None,
-                    "status": f"error: {exc}",
+                    "status": "error",
+                    "detail": str(exc),
                 })
 
         if not save_dataframe(df, dataset.file.path, dataset.file_format):

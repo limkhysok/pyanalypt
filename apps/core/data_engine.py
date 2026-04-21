@@ -51,7 +51,76 @@ def _load_sql(file_path):
         conn.close()
 
 
-SUPPORTED_CASTS = {"datetime", "numeric", "float", "integer", "string", "boolean", "category"}
+SUPPORTED_CASTS = {
+    "datetime",
+    "numeric",
+    "float",
+    "integer",
+    "string",
+    "boolean",
+    "category",
+}
+
+
+def validate_cast(series, target):
+    """
+    Check if casting 'series' to 'target' is safe or contains risks.
+    Returns (status, message) where status is 'safe', 'warning', or 'error'.
+    """
+    if target == "integer":
+        # Check if float series has decimals
+        if pd.api.types.is_float_dtype(series):
+            non_integer_mask = series.dropna().apply(lambda x: x != int(x))
+            if non_integer_mask.any():
+                return (
+                    "warning",
+                    "Column contains decimal values that will be truncated during conversion.",
+                )
+
+    if target == "boolean":
+        # Check if values are logically boolean (0/1, True/False, or strings thereof)
+        # We allow common representations, otherwise warn about logical mismatch.
+        valid_bool_values = {
+            0,
+            1,
+            0.0,
+            1.0,
+            True,
+            False,
+            "0",
+            "1",
+            "True",
+            "False",
+            "true",
+            "false",
+        }
+        # Convert to set for fast lookup, filtering out strings if they aren't in the list
+        unique_vals = set(series.dropna().unique())
+        # If any unique value is not in our set of "logical booleans"
+        if not unique_vals.issubset(valid_bool_values):
+            return (
+                "warning",
+                "Column contains values other than 0, 1, or True/False. Results may be unexpected.",
+            )
+
+    if target in ("numeric", "float", "integer", "datetime"):
+        # Dry run to see how many new NaNs are created (parsing failures)
+        original_nulls = int(series.isna().sum())
+        try:
+            # We use a copy for the dry run
+            casted = apply_cast(series.copy(), target)
+            new_nulls = int(casted.isna().sum())
+            if new_nulls > original_nulls:
+                diff = new_nulls - original_nulls
+                pct = round((diff / len(series)) * 100, 1)
+                return (
+                    "warning",
+                    f"Conversion failed for {diff} values ({pct}% of rows). These will become NULL.",
+                )
+        except Exception as e:
+            return "error", f"Cast is fundamentally incompatible: {str(e)}"
+
+    return "safe", "Conversion is safe."
 
 
 def apply_cast(series, target):
@@ -149,13 +218,15 @@ def generate_summary_stats(df):
         if is_numeric:
             valid = col_data.dropna()
             if not valid.empty:
-                col_summary.update({
-                    "min": float(valid.min()),
-                    "max": float(valid.max()),
-                    "mean": float(valid.mean()),
-                    "median": float(valid.median()),
-                    "std": float(valid.std()),
-                })
+                col_summary.update(
+                    {
+                        "min": float(valid.min()),
+                        "max": float(valid.max()),
+                        "mean": float(valid.mean()),
+                        "median": float(valid.median()),
+                        "std": float(valid.std()),
+                    }
+                )
         else:
             col_summary["top_values"] = col_data.value_counts().head(5).to_dict()
 
