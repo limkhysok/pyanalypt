@@ -30,6 +30,11 @@ class Dataset(models.Model):
         related_name="children",
     )
     is_cleaned = models.BooleanField(default=False)
+    column_casts = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="User-defined dtype overrides: {column_name: target_type}. Re-applied on every load.",
+    )
 
     uploaded_date = models.DateTimeField(auto_now_add=True)
     updated_date = models.DateTimeField(auto_now=True)

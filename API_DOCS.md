@@ -769,6 +769,7 @@ All endpoints below are under `/api/v1/datalab/`.
 |---|--------|----------|-------------|
 | 1 | `GET` | `/datalab/preview/{dataset_id}/` | Render dataset as a data table |
 | 2 | `GET` | `/datalab/inspect/{dataset_id}/` | Return per-column dtype, null counts, null %, and memory usage |
+| 3 | `POST` | `/datalab/cast/{dataset_id}/` | Cast one or more columns to a new dtype and persist the change |
 
 ---
 
@@ -841,6 +842,66 @@ Returns structured per-column metadata: dtype, null counts, null percentage, and
 > `info.columns` is the structured per-column breakdown — use this to render the inspect table.
 > `null_pct` is rounded to 1 decimal place (e.g. `1.2` means 1.2% of rows are null for that column).
 > `memory_usage_bytes` is the total deep memory usage of the dataframe in bytes.
+
+---
+
+### 3. Cast Column Dtypes
+
+Cast one or more columns to a new dtype. The change is persisted back to the dataset file on disk. Use this after `inspect` reveals columns with wrong types (e.g. `Date` as `object` instead of `datetime64`).
+
+- **Endpoint**: `POST /datalab/cast/{dataset_id}/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "casts": {
+    "Date": "datetime",
+    "Quantity": "integer",
+    "Unit_Price": "float"
+  }
+}
+```
+
+**Supported target types:**
+
+| Type | Pandas operation | Use when |
+|---|---|---|
+| `datetime` | `pd.to_datetime(errors='coerce')` | Column contains dates/timestamps stored as strings |
+| `numeric` | `pd.to_numeric(errors='coerce')` | Column contains numbers stored as strings (keeps float) |
+| `float` | `pd.to_numeric(errors='coerce')` | Same as numeric, explicit float output |
+| `integer` | `pd.to_numeric(errors='coerce').astype('Int64')` | Whole numbers; supports nulls via nullable Int64 |
+| `string` | `.astype(str)` | Force everything to string |
+| `boolean` | `.astype(bool)` | Convert truthy/falsy values |
+| `category` | `.astype('category')` | Low-cardinality string columns |
+
+> Values that cannot be converted are coerced to `null` (NaT for datetime, NaN for numeric) rather than raising an error.
+> SQL files are not supported — returns `400`.
+
+- **Response (200 OK)**:
+```json
+{
+  "updated_columns": [
+    { "column": "Date",       "from_dtype": "object", "to_dtype": "datetime64[ns]", "status": "ok" },
+    { "column": "Quantity",   "from_dtype": "object", "to_dtype": "Int64",          "status": "ok" },
+    { "column": "Unit_Price", "from_dtype": "object", "to_dtype": "float64",        "status": "ok" }
+  ]
+}
+```
+
+> If a column cast fails, `status` will be `"error: <reason>"` and `to_dtype` will be `null`. Other columns in the same request that succeeded are still saved.
+
+- **Response (400)** — unknown column:
+```json
+{ "detail": "Columns not found in dataset: ['BadCol']" }
+```
+- **Response (400)** — unsupported type:
+```json
+{ "detail": "Unsupported types: ['text']. Supported: ['boolean', 'category', 'datetime', 'float', 'integer', 'numeric', 'string']" }
+```
+- **Response (400)** — SQL file:
+```json
+{ "detail": "Cast is not supported for SQL files." }
+```
 
 ---
 

@@ -6,9 +6,11 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
 from apps.datasets.models import Dataset
-from apps.core.data_engine import load_dataframe
+from apps.core.data_engine import load_dataframe, save_dataframe, apply_cast, apply_stored_casts, SUPPORTED_CASTS
 
 logger = logging.getLogger(__name__)
+
+_UNSUPPORTED_FORMAT = "Unsupported file format."
 
 
 def _format_size(size_bytes):
@@ -28,9 +30,12 @@ class DatalabViewSet(viewsets.ViewSet):
         df = load_dataframe(dataset.file.path, dataset.file_format)
         if df is None:
             return Response(
-                {"detail": "Unsupported file format."},
+                {"detail": _UNSUPPORTED_FORMAT},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
 
         return Response({
             "dataset_id": dataset.id,
@@ -49,9 +54,12 @@ class DatalabViewSet(viewsets.ViewSet):
         df = load_dataframe(dataset.file.path, dataset.file_format)
         if df is None:
             return Response(
-                {"detail": "Unsupported file format."},
+                {"detail": _UNSUPPORTED_FORMAT},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
 
         total_rows = len(df)
 
@@ -70,3 +78,73 @@ class DatalabViewSet(viewsets.ViewSet):
                 "memory_usage_bytes": int(df.memory_usage(deep=True).sum()),
             },
         })
+
+    def cast_columns(self, request, dataset_id=None):
+        """POST /datalab/cast/{dataset_id}/"""
+        casts = request.data.get("casts")
+        if not casts or not isinstance(casts, dict):
+            return Response(
+                {"detail": "Provide a 'casts' object mapping column names to target types."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        invalid_types = [t for t in casts.values() if t not in SUPPORTED_CASTS]
+        if invalid_types:
+            return Response(
+                {"detail": f"Unsupported types: {invalid_types}. Supported: {sorted(SUPPORTED_CASTS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+
+        if dataset.file_format.lower() == "sql":
+            return Response(
+                {"detail": "Cast is not supported for SQL files."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        df = load_dataframe(dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response(
+                {"detail": _UNSUPPORTED_FORMAT},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        unknown_cols = [c for c in casts if c not in df.columns]
+        if unknown_cols:
+            return Response(
+                {"detail": f"Columns not found in dataset: {unknown_cols}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        results = []
+        for col, target in casts.items():
+            from_dtype = str(df[col].dtype)
+            try:
+                df[col] = apply_cast(df[col], target)
+                results.append({
+                    "column": col,
+                    "from_dtype": from_dtype,
+                    "to_dtype": str(df[col].dtype),
+                    "status": "ok",
+                })
+            except Exception as exc:
+                results.append({
+                    "column": col,
+                    "from_dtype": from_dtype,
+                    "to_dtype": None,
+                    "status": f"error: {exc}",
+                })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response(
+                {"detail": "Failed to save updated dataset."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Persist cast preferences so they survive reload (flat files lose type info)
+        successful = {r["column"]: casts[r["column"]] for r in results if r["status"] == "ok"}
+        dataset.column_casts = {**dataset.column_casts, **successful}
+        dataset.save(update_fields=["column_casts"])
+
+        return Response({"updated_columns": results})

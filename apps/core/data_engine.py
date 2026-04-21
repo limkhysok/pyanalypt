@@ -51,6 +51,66 @@ def _load_sql(file_path):
         conn.close()
 
 
+SUPPORTED_CASTS = {"datetime", "numeric", "float", "integer", "string", "boolean", "category"}
+
+
+def apply_cast(series, target):
+    """Apply a single dtype cast to a pandas Series. Used by cast_columns view and apply_stored_casts."""
+    if target == "datetime":
+        return pd.to_datetime(series, errors="coerce")
+    if target in ("numeric", "float"):
+        return pd.to_numeric(series, errors="coerce")
+    if target == "integer":
+        return pd.to_numeric(series, errors="coerce").astype("Int64")
+    if target == "string":
+        return series.astype(str)
+    if target == "boolean":
+        return series.astype(bool)
+    if target == "category":
+        return series.astype("category")
+    return series
+
+
+def apply_stored_casts(df, column_casts):
+    """
+    Re-apply user-defined dtype overrides after loading from a flat file.
+    column_casts is a dict of {column_name: target_type} stored on the Dataset model.
+    Silently skips columns that no longer exist or fail to cast.
+    """
+    for col, target in column_casts.items():
+        if col not in df.columns:
+            continue
+        try:
+            df[col] = apply_cast(df[col], target)
+        except Exception:
+            logger.warning("apply_stored_casts: failed to cast %s → %s", col, target)
+    return df
+
+
+def save_dataframe(df, file_path, file_format):
+    """
+    Write a DataFrame back to disk in its original format.
+    Returns True on success, False on failure or unsupported format.
+    SQL files are not supported for round-trip saves.
+    """
+    fmt = file_format.lower()
+    try:
+        if fmt == "csv":
+            df.to_csv(file_path, index=False)
+        elif fmt in ("xlsx", "xls"):
+            df.to_excel(file_path, index=False)
+        elif fmt == "json":
+            df.to_json(file_path, orient="records", indent=2)
+        elif fmt == "parquet":
+            df.to_parquet(file_path, index=False)
+        else:
+            return False
+        return True
+    except Exception:
+        logger.exception("Failed to save dataframe: %s (%s)", file_path, file_format)
+        return False
+
+
 def normalize_columns(df):
     """
     Standardize column names to lowercase_with_underscores.
