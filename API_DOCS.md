@@ -770,6 +770,7 @@ All endpoints below are under `/api/v1/datalab/`.
 | 1 | `GET` | `/datalab/preview/{dataset_id}/` | Render dataset as a data table |
 | 2 | `GET` | `/datalab/inspect/{dataset_id}/` | Return per-column dtype, null counts, null %, and memory usage |
 | 3 | `POST` | `/datalab/cast/{dataset_id}/` | Cast one or more columns to a new dtype and persist the change |
+| 4 | `POST` | `/datalab/drop-duplicates/{dataset_id}/` | Remove duplicate rows and persist the cleaned dataset |
 
 ---
 
@@ -813,25 +814,31 @@ Returns structured per-column metadata: dtype, null counts, null percentage, and
   "info": {
     "columns": [
       {
-        "column": "Name",
-        "dtype": "object",
+        "column": "user_id",
+        "dtype": "int64",
         "non_null_count": 1000,
         "null_count": 0,
-        "null_pct": 0.0
+        "null_pct": 0.0,
+        "unique_count": 1000,
+        "is_unique": true
       },
       {
         "column": "Age",
         "dtype": "float64",
         "non_null_count": 988,
         "null_count": 12,
-        "null_pct": 1.2
+        "null_pct": 1.2,
+        "unique_count": 72,
+        "is_unique": false
       },
       {
         "column": "Salary",
         "dtype": "int64",
         "non_null_count": 1000,
         "null_count": 0,
-        "null_pct": 0.0
+        "null_pct": 0.0,
+        "unique_count": 540,
+        "is_unique": false
       }
     ],
     "memory_usage_bytes": 24128
@@ -841,6 +848,8 @@ Returns structured per-column metadata: dtype, null counts, null percentage, and
 
 > `info.columns` is the structured per-column breakdown — use this to render the inspect table.
 > `null_pct` is rounded to 1 decimal place (e.g. `1.2` means 1.2% of rows are null for that column).
+> `unique_count` is the number of distinct non-null values in the column.
+> `is_unique` is `true` when every row has a distinct value — use this to identify ID/key columns (`user_id`, `transaction_id`, `product_id`, etc.).
 > `memory_usage_bytes` is the total deep memory usage of the dataframe in bytes.
 
 ---
@@ -897,6 +906,58 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 ```json
 { "detail": "Unsupported types: ['text']. Supported: ['boolean', 'category', 'datetime', 'float', 'integer', 'numeric', 'string']" }
 ```
+---
+
+### 4. Drop Duplicate Rows
+
+Remove duplicate rows from the dataset and persist the result to disk. Use `subset` to target specific ID/key columns (`product_id`, `transaction_id`, etc.) rather than checking all columns.
+
+- **Endpoint**: `POST /datalab/drop-duplicates/{dataset_id}/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "subset": ["transaction_id", "product_id"],
+  "keep": "first"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `subset` | array of strings | No | Columns to check for duplicates. Omit to compare all columns. |
+| `keep` | `"first"` \| `"last"` \| `false` | No | Which duplicate to keep. `"first"` (default) keeps the first occurrence, `"last"` keeps the last, `false` drops all copies including the original. |
+
+- **Response (200 OK)** — duplicates found and removed:
+```json
+{
+  "rows_before": 1000,
+  "rows_after": 950,
+  "rows_dropped": 50
+}
+```
+
+- **Response (200 OK)** — no duplicates found (file unchanged):
+```json
+{
+  "rows_before": 1000,
+  "rows_after": 1000,
+  "rows_dropped": 0,
+  "detail": "No duplicate rows found."
+}
+```
+
+- **Response (400)** — unknown column in `subset`:
+```json
+{ "detail": "Columns not found in dataset: ['bad_col']" }
+```
+- **Response (400)** — invalid `keep` value:
+```json
+{ "detail": "Invalid 'keep' value. Use 'first', 'last', or false." }
+```
+
+> When duplicates are dropped, `dataset.file_size` is updated automatically to reflect the smaller file.
+> The cached DataFrame is invalidated so the next preview/inspect call returns the cleaned data.
+
 ---
 
 ### Standard Error Format

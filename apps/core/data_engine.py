@@ -1,6 +1,7 @@
 import pickle
 import logging
 
+import numpy as np
 import pandas as pd
 from django.conf import settings
 from django.core.cache import cache
@@ -77,11 +78,8 @@ def validate_cast(series, target):
     Check if casting 'series' to 'target' is safe or contains risks.
     Returns (status, message) where status is 'safe', 'warning', or 'error'.
     """
-    if target == "integer":
-        # Check if float series has decimals
-        if pd.api.types.is_float_dtype(series):
-            non_integer_mask = series.dropna().apply(lambda x: x != int(x))
-            if non_integer_mask.any():
+    if target == "integer" and pd.api.types.is_float_dtype(series):
+        if (series.dropna() % 1 != 0).any():
                 return (
                     "warning",
                     "Column contains decimal values that will be truncated during conversion.",
@@ -224,7 +222,10 @@ def generate_summary_stats(df):
                     }
                 )
         else:
-            col_summary["top_values"] = col_data.value_counts().head(5).to_dict()
+            col_summary["top_values"] = {
+                (k.item() if isinstance(k, np.generic) else k): int(v)
+                for k, v in col_data.value_counts().head(5).items()
+            }
 
         summary["columns"].append(col_summary)
 

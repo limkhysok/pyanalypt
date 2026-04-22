@@ -85,6 +85,7 @@ class DatalabViewSet(viewsets.ViewSet):
             df = apply_stored_casts(df, dataset.column_casts)
 
         total_rows = len(df)
+        unique_counts = df.nunique()
 
         return Response({
             "info": {
@@ -95,6 +96,8 @@ class DatalabViewSet(viewsets.ViewSet):
                         "non_null_count": int(df[col].notna().sum()),
                         "null_count": int(df[col].isna().sum()),
                         "null_pct": round(df[col].isna().sum() / total_rows * 100, 1) if total_rows > 0 else 0.0,
+                        "unique_count": int(unique_counts[col]),
+                        "is_unique": bool(unique_counts[col] == total_rows),
                     }
                     for col in df.columns
                 ],
@@ -181,3 +184,67 @@ class DatalabViewSet(viewsets.ViewSet):
         dataset.save(update_fields=["column_casts"])
 
         return Response({"updated_columns": results})
+
+    def drop_duplicates(self, request, dataset_id=None):
+        """POST /datalab/drop-duplicates/{dataset_id}/"""
+        subset = request.data.get("subset")
+        keep = request.data.get("keep", "first")
+
+        if keep not in ("first", "last", False):
+            return Response(
+                {"detail": "Invalid 'keep' value. Use 'first', 'last', or false."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response(
+                {"detail": _UNSUPPORTED_FORMAT},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        if subset is not None:
+            if not isinstance(subset, list) or not subset:
+                return Response(
+                    {"detail": "'subset' must be a non-empty list of column names."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            unknown_cols = [c for c in subset if c not in df.columns]
+            if unknown_cols:
+                return Response(
+                    {"detail": f"Columns not found in dataset: {unknown_cols}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        rows_before = len(df)
+        df = df.drop_duplicates(subset=subset, keep=keep)
+        rows_dropped = rows_before - len(df)
+
+        if rows_dropped == 0:
+            return Response({
+                "rows_before": rows_before,
+                "rows_after": rows_before,
+                "rows_dropped": 0,
+                "detail": "No duplicate rows found.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response(
+                {"detail": "Failed to save updated dataset."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        invalidate_dataframe_cache(dataset.id)
+
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        return Response({
+            "rows_before": rows_before,
+            "rows_after": len(df),
+            "rows_dropped": rows_dropped,
+        })
