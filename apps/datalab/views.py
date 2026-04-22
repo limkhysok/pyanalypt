@@ -6,11 +6,34 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
 from apps.datasets.models import Dataset
-from apps.core.data_engine import load_dataframe, save_dataframe, apply_cast, validate_cast, apply_stored_casts, SUPPORTED_CASTS
+from apps.core.data_engine import (
+    get_cached_dataframe,
+    invalidate_dataframe_cache,
+    save_dataframe,
+    apply_cast,
+    validate_cast,
+    apply_stored_casts,
+    SUPPORTED_CASTS,
+)
 
 logger = logging.getLogger(__name__)
 
 _UNSUPPORTED_FORMAT = "Unsupported file format."
+
+
+def _validate_casts(df, casts):
+    """Run pre-flight validation on each requested cast. Returns (validated, warnings, errors)."""
+    validated = {}
+    warnings = []
+    errors = []
+    for col, target in casts.items():
+        cast_status, message = validate_cast(df[col], target)
+        validated[col] = {"status": cast_status, "message": message}
+        if cast_status == "warning":
+            warnings.append({"column": col, "warning": message})
+        elif cast_status == "error":
+            errors.append({"column": col, "target": target, "status": "error", "detail": message})
+    return validated, warnings, errors
 
 
 def _format_size(size_bytes):
@@ -27,7 +50,7 @@ class DatalabViewSet(viewsets.ViewSet):
     def preview(self, request, dataset_id=None):
         """GET /datalab/preview/{dataset_id}/"""
         dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
-        df = load_dataframe(dataset.file.path, dataset.file_format)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
         if df is None:
             return Response(
                 {"detail": _UNSUPPORTED_FORMAT},
@@ -51,7 +74,7 @@ class DatalabViewSet(viewsets.ViewSet):
     def inspect(self, request, dataset_id=None):
         """GET /datalab/inspect/{dataset_id}/"""
         dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
-        df = load_dataframe(dataset.file.path, dataset.file_format)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
         if df is None:
             return Response(
                 {"detail": _UNSUPPORTED_FORMAT},
@@ -97,13 +120,7 @@ class DatalabViewSet(viewsets.ViewSet):
 
         dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
 
-        if dataset.file_format.lower() == "sql":
-            return Response(
-                {"detail": "Cast is not supported for SQL files."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        df = load_dataframe(dataset.file.path, dataset.file_format)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
         if df is None:
             return Response(
                 {"detail": _UNSUPPORTED_FORMAT},
@@ -118,38 +135,19 @@ class DatalabViewSet(viewsets.ViewSet):
             )
 
         force = request.data.get("force", False)
-        results = []
-        validation_warnings = []
-        
-        # Phase 1: Validation
-        col_validated_data = {}
-        for col, target in casts.items():
-            status, message = validate_cast(df[col], target)
-            col_validated_data[col] = {"status": status, "message": message}
-            if status == "warning":
-                validation_warnings.append({"column": col, "warning": message})
-            elif status == "error":
-                results.append({
-                    "column": col,
-                    "target": target,
-                    "status": "error",
-                    "detail": message
-                })
+        col_validated_data, validation_warnings, results = _validate_casts(df, casts)
 
-        # Phase 2: Handle Warnings (Block if not forced)
         if validation_warnings and not force:
             return Response({
                 "detail": "Some conversions are risky. Use 'force: true' to proceed.",
                 "warnings": validation_warnings,
-                "errors": [r for r in results if r["status"] == "error"]
+                "errors": results,
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Phase 3: Apply (only for non-error columns)
+        error_cols = {r["column"] for r in results}
         for col, target in casts.items():
-            # Skip if we already logged an error during validation
-            if any(r["column"] == col and r["status"] == "error" for r in results):
+            if col in error_cols:
                 continue
-                
             from_dtype = str(df[col].dtype)
             try:
                 df[col] = apply_cast(df[col], target)
@@ -158,7 +156,7 @@ class DatalabViewSet(viewsets.ViewSet):
                     "from_dtype": from_dtype,
                     "to_dtype": str(df[col].dtype),
                     "status": "ok",
-                    "validation": col_validated_data[col]
+                    "validation": col_validated_data[col],
                 })
             except Exception as exc:
                 results.append({
@@ -174,6 +172,8 @@ class DatalabViewSet(viewsets.ViewSet):
                 {"detail": "Failed to save updated dataset."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+        invalidate_dataframe_cache(dataset.id)
 
         # Persist cast preferences so they survive reload (flat files lose type info)
         successful = {r["column"]: casts[r["column"]] for r in results if r["status"] == "ok"}

@@ -137,6 +137,8 @@ else:
         }
     }
 
+DATAFRAME_CACHE_TTL = env.int("DATAFRAME_CACHE_TTL", default=7200)  # seconds, default 2 hours
+
 
 # ===== CORS CONFIGURATION =====
 # Cross-Origin Resource Sharing settings for API access

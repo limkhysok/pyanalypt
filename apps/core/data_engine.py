@@ -1,19 +1,49 @@
-import io
-import re
+import pickle
 import logging
-import sqlite3
 
 import pandas as pd
+from django.conf import settings
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
-SQLITE_MEMORY = ":memory:"
+
+def _df_cache_key(dataset_id):
+    return f"df:{dataset_id}"
+
+
+def get_cached_dataframe(dataset_id, file_path, file_format):
+    """
+    Return a DataFrame from cache (Redis in prod, LocMemCache in dev), or load
+    from disk on a miss and populate the cache with a 2-hour TTL.
+    Falls back gracefully if the cache is unavailable.
+    """
+    key = _df_cache_key(dataset_id)
+    blob = cache.get(key)
+    if blob is not None:
+        try:
+            return pickle.loads(blob)
+        except Exception:
+            logger.warning("df cache deserialize failed for dataset %s — reloading", dataset_id)
+
+    df = load_dataframe(file_path, file_format)
+    if df is not None:
+        try:
+            cache.set(key, pickle.dumps(df), timeout=settings.DATAFRAME_CACHE_TTL)
+        except Exception:
+            logger.warning("df cache set failed for dataset %s — serving uncached", dataset_id)
+    return df
+
+
+def invalidate_dataframe_cache(dataset_id):
+    """Remove the cached DataFrame for a dataset (call after file mutation or deletion)."""
+    cache.delete(_df_cache_key(dataset_id))
 
 
 def load_dataframe(file_path, file_format):
     """
     Load a file into a DataFrame using the explicit file_format field.
-    Supports: csv, xlsx, xls, json, parquet, sql.
+    Supports: csv, xlsx, xls, json, parquet.
     Returns None on failure instead of raising, so callers can return 400.
     """
     try:
@@ -26,29 +56,9 @@ def load_dataframe(file_path, file_format):
             return pd.read_json(file_path)
         if fmt == "parquet":
             return pd.read_parquet(file_path)
-        if fmt == "sql":
-            return _load_sql(file_path)
     except Exception:
         logger.exception("Failed to load dataframe: %s (%s)", file_path, file_format)
     return None
-
-
-def _load_sql(file_path):
-    conn = sqlite3.connect(SQLITE_MEMORY)
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            conn.executescript(f.read())
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-        if not tables:
-            return None
-        table_name = tables[0][0]
-        if not re.match(r"^[A-Za-z_]\w*$", table_name):
-            return None
-        return pd.read_sql(f'SELECT * FROM "{table_name}"', conn)
-    finally:
-        conn.close()
 
 
 SUPPORTED_CASTS = {
@@ -80,20 +90,7 @@ def validate_cast(series, target):
     if target == "boolean":
         # Check if values are logically boolean (0/1, True/False, or strings thereof)
         # We allow common representations, otherwise warn about logical mismatch.
-        valid_bool_values = {
-            0,
-            1,
-            0.0,
-            1.0,
-            True,
-            False,
-            "0",
-            "1",
-            "True",
-            "False",
-            "true",
-            "false",
-        }
+        valid_bool_values = {True, False, "0", "1", "True", "False", "true", "false"}
         # Convert to set for fast lookup, filtering out strings if they aren't in the list
         unique_vals = set(series.dropna().unique())
         # If any unique value is not in our set of "logical booleans"
@@ -160,7 +157,6 @@ def save_dataframe(df, file_path, file_format):
     """
     Write a DataFrame back to disk in its original format.
     Returns True on success, False on failure or unsupported format.
-    SQL files are not supported for round-trip saves.
     """
     fmt = file_format.lower()
     try:

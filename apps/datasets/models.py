@@ -64,6 +64,8 @@ class Dataset(models.Model):
 def dataset_delete(sender, instance, **kwargs):
     if instance.file:
         instance.file.delete(save=False)
+    from apps.core.data_engine import invalidate_dataframe_cache
+    invalidate_dataframe_cache(instance.id)
 
 
 class DatasetActivityLog(models.Model):

@@ -13,7 +13,7 @@ def validate_file_size_and_type(value):
     """
     Validation for datasets:
     - Size limit: 25MB
-    - Formats: CSV, XLSX, JSON, Parquet, SQL
+    - Formats: CSV, XLSX, JSON, Parquet
     - Binary formats (xlsx, parquet) are verified against their magic bytes
       so a renamed file cannot bypass the extension check.
     """
@@ -24,9 +24,9 @@ def validate_file_size_and_type(value):
 
     # Extension Check
     ext = os.path.splitext(value.name)[1].lower()
-    valid_extensions = [".csv", ".xlsx", ".json", ".parquet", ".sql"]
+    valid_extensions = [".csv", ".xlsx", ".json", ".parquet"]
     if ext not in valid_extensions:
-        raise ValidationError("Unsupported file extension. Use CSV, XLSX, JSON, Parquet, or SQL.")
+        raise ValidationError("Unsupported file extension. Use CSV, XLSX, JSON, or Parquet.")
 
     # Magic bytes check for binary formats
     expected_magic = _MAGIC_BYTES.get(ext)

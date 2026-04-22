@@ -655,7 +655,7 @@ All endpoints below are under `/api/v1/datasets/`.
 | `user` | int | Owner user ID |
 | `file` | string | URL to the stored file |
 | `file_name` | string | Display name of the file |
-| `file_format` | string | File extension (`csv`, `xlsx`, `json`, `parquet`, `sql`) |
+| `file_format` | string | File extension (`csv`, `xlsx`, `json`, `parquet`) |
 | `file_size` | int | File size in bytes |
 | `uploaded_date` | datetime | When the file was first uploaded |
 | `updated_date` | datetime | Last modification timestamp |
@@ -666,7 +666,7 @@ Standard multipart/form-data upload.
 - **Endpoint**: `POST /datasets/upload/`
 - **Auth Required**: Yes
 - **Request (Form Data)**:
-  - `file`: The `.csv`, `.xlsx`, `.json`, `.parquet`, or `.sql` file.
+  - `file`: The `.csv`, `.xlsx`, `.json`, or `.parquet` file.
 - **Response (201 Created)**: The newly created `Dataset` object.
 
 ### 2. List All Datasets
@@ -716,7 +716,7 @@ Download the dataset converted to a requested format. Defaults to the dataset's 
 
 - **Endpoint**: `GET /datasets/{id}/export/`
 - **Auth Required**: Yes
-- **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`, `parquet`, `sql`)*
+- **Query Params**: `?format=csv` *(options: `csv`, `json`, `xlsx`, `parquet`)*
 - **Response**: Binary file download with appropriate `Content-Disposition` header.
 - **Response (400)** if the format is unsupported.
 
@@ -729,10 +729,10 @@ Clone an existing dataset into a new record. Supports on-the-fly format conversi
 ```json
 {
   "new_file_name": "Sales Copy",
-  "format": "sql"
+  "format": "csv"
 }
 ```
-> Both fields are optional. `new_file_name` defaults to `<original>_copy`. `format` defaults to the source dataset's format.
+> Both fields are optional. `new_file_name` defaults to `<original>_copy`. `format` defaults to the source dataset's format. Supported formats: `csv`, `json`, `xlsx`, `parquet`.
 
 - **Response (201 Created)**: `Dataset` object of the new clone.
 
@@ -875,7 +875,6 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 | `category` | `.astype('category')` | Low-cardinality string columns |
 
 > Values that cannot be converted are coerced to `null` (NaT for datetime, NaN for numeric) rather than raising an error.
-> SQL files are not supported — returns `400`.
 
 - **Response (200 OK)**:
 ```json
@@ -898,11 +897,6 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 ```json
 { "detail": "Unsupported types: ['text']. Supported: ['boolean', 'category', 'datetime', 'float', 'integer', 'numeric', 'string']" }
 ```
-- **Response (400)** — SQL file:
-```json
-{ "detail": "Cast is not supported for SQL files." }
-```
-
 ---
 
 ### Standard Error Format

@@ -1,8 +1,6 @@
 import io
 import os
-import re
 import logging
-import sqlite3
 
 from rest_framework import mixins, viewsets, permissions, generics, status
 from rest_framework.pagination import PageNumberPagination
@@ -12,14 +10,13 @@ from django.http import HttpResponse
 from django.core.files.base import ContentFile
 from django.shortcuts import get_object_or_404
 
-from apps.core.data_engine import load_dataframe
+from apps.core.data_engine import get_cached_dataframe
 from .models import Dataset, DatasetActivityLog
 from .serializers import DatasetSerializer, DatasetActivityLogSerializer
 
 logger = logging.getLogger(__name__)
 
 ERR_UNSUPPORTED_FORMAT = "Unsupported format."
-SQLITE_MEMORY = ":memory:"
 
 
 class StandardPagination(PageNumberPagination):
@@ -60,7 +57,7 @@ class DatasetViewSet(
       GET    /datasets/{id}/         — retrieve dataset
       DELETE /datasets/{id}/         — delete dataset
       PATCH  /datasets/{id}/rename/  — rename file_name
-      GET    /datasets/{id}/export/  — export (?format=csv|json|xlsx|parquet|sql)
+      GET    /datasets/{id}/export/  — export (?format=csv|json|xlsx|parquet)
       POST   /datasets/{id}/duplicate/ — duplicate (?format=...)
       GET    /datasets/activity_logs/ — list activities (?dataset_id=<id>)
     """
@@ -101,7 +98,7 @@ class DatasetViewSet(
         base_name = os.path.splitext(dataset.file_name)[0]
 
         try:
-            df = load_dataframe(file_path, dataset.file_format)
+            df = get_cached_dataframe(dataset.id, file_path, dataset.file_format)
             if df is None:
                 return Response({"detail": ERR_UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -125,16 +122,6 @@ class DatasetViewSet(
                 buf.seek(0)
                 response = HttpResponse(buf.getvalue(), content_type="application/octet-stream")
                 response["Content-Disposition"] = f'attachment; filename="{base_name}.parquet"'
-            elif export_format == "sql":
-                conn = sqlite3.connect(SQLITE_MEMORY)
-                table_name = re.sub(r'\W', '_', base_name) or "dataset"
-                df.to_sql(table_name, conn, index=False)
-                buf = io.StringIO()
-                for line in conn.iterdump():
-                    buf.write(f"{line}\n")
-                conn.close()
-                response = HttpResponse(buf.getvalue(), content_type="application/sql")
-                response["Content-Disposition"] = f'attachment; filename="{base_name}.sql"'
             else:
                 return Response({"detail": f"Unsupported format: {export_format}"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -154,7 +141,7 @@ class DatasetViewSet(
         new_format = request.data.get("format", source.file_format).lower()
 
         try:
-            df = load_dataframe(source.file.path, source.file_format)
+            df = get_cached_dataframe(source.id, source.file.path, source.file_format)
             if df is None:
                 return Response({"detail": "Failed to load source."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -174,15 +161,6 @@ class DatasetViewSet(
                 buf = io.BytesIO()
                 df.to_parquet(buf, index=False)
                 content = ContentFile(buf.getvalue())
-            elif new_format == "sql":
-                conn = sqlite3.connect(SQLITE_MEMORY)
-                table_name = re.sub(r'\W', '_', new_name) or "dataset"
-                df.to_sql(table_name, conn, index=False)
-                buf = io.StringIO()
-                for line in conn.iterdump():
-                    buf.write(f"{line}\n")
-                conn.close()
-                content = ContentFile(buf.getvalue().encode("utf-8"))
             else:
                 return Response({"detail": "Unsupported format."}, status=status.HTTP_400_BAD_REQUEST)
 
