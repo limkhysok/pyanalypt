@@ -174,6 +174,49 @@ def save_dataframe(df, file_path, file_format):
         return False
 
 
+def update_cell(df, row_index, column, value):
+    """
+    Write a new value into df.at[row_index, column] with type-safe coercion.
+    None sets the cell to NaN. Raises ValueError on dtype mismatch.
+    Returns (updated_df, coerced_value).
+    """
+    dtype = df[column].dtype
+
+    if value is None:
+        df.at[row_index, column] = np.nan
+        return df, None
+
+    try:
+        if pd.api.types.is_integer_dtype(dtype):
+            coerced = int(value)
+        elif pd.api.types.is_float_dtype(dtype):
+            coerced = float(value)
+        elif pd.api.types.is_bool_dtype(dtype):
+            sv = str(value).lower()
+            if sv in ("true", "1"):
+                coerced = True
+            elif sv in ("false", "0"):
+                coerced = False
+            else:
+                raise ValueError(f"Cannot convert '{value}' to boolean.")
+        elif pd.api.types.is_datetime64_any_dtype(dtype):
+            coerced = pd.to_datetime(value)
+        else:
+            coerced = str(value)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"Cannot assign '{value}' to column '{column}' (dtype: {dtype})."
+        ) from exc
+
+    df.at[row_index, column] = coerced
+    return df, coerced
+
+
+def rename_column(df, old_name, new_name):
+    """Rename a single column header. Returns the modified DataFrame."""
+    return df.rename(columns={old_name: new_name})
+
+
 def normalize_columns(df):
     """
     Standardize column names to lowercase_with_underscores.

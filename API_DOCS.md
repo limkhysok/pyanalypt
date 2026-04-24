@@ -771,6 +771,8 @@ All endpoints below are under `/api/v1/datalab/`.
 | 2 | `GET` | `/datalab/inspect/{dataset_id}/` | Return per-column dtype, null counts, null %, and memory usage |
 | 3 | `POST` | `/datalab/cast/{dataset_id}/` | Cast one or more columns to a new dtype and persist the change |
 | 4 | `POST` | `/datalab/drop-duplicates/{dataset_id}/` | Remove duplicate rows and persist the cleaned dataset |
+| 5 | `POST` | `/datalab/rename-column/{dataset_id}/` | Rename a column header and persist the change |
+| 6 | `PATCH` | `/datalab/update-cell/{dataset_id}/` | Edit a single cell value with dtype validation |
 
 ---
 
@@ -957,6 +959,111 @@ Remove duplicate rows from the dataset and persist the result to disk. Use `subs
 
 > When duplicates are dropped, `dataset.file_size` is updated automatically to reflect the smaller file.
 > The cached DataFrame is invalidated so the next preview/inspect call returns the cleaned data.
+
+---
+
+### 5. Rename Column Header
+
+Rename a single column header and persist the change to disk. If the column had a stored dtype cast, the cast is automatically migrated to the new name.
+
+- **Endpoint**: `POST /datalab/rename-column/{dataset_id}/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "old_name": "Unnamed: 0",
+  "new_name": "product_id"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `old_name` | string | Yes | Current column name |
+| `new_name` | string | Yes | Desired column name |
+
+- **Response (200 OK)**:
+```json
+{
+  "old_name": "Unnamed: 0",
+  "new_name": "product_id",
+  "columns": ["product_id", "name", "price", "quantity"]
+}
+```
+
+> `columns` is the full updated column list in original order — use it to refresh the column headers in the UI.
+
+- **Response (400)** — column not found:
+```json
+{ "detail": "Column 'Unnamed: 0' not found in dataset." }
+```
+- **Response (400)** — name already taken:
+```json
+{ "detail": "Column 'product_id' already exists in dataset." }
+```
+- **Response (400)** — identical names:
+```json
+{ "detail": "New name is identical to the current name." }
+```
+
+---
+
+### 6. Update Cell Value
+
+Edit a single cell at a specific row and column. The value is coerced to match the column's existing dtype — if it can't be converted, a `400` is returned before anything is written to disk.
+
+- **Endpoint**: `PATCH /datalab/update-cell/{dataset_id}/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "row_index": 4,
+  "column": "Quantity",
+  "value": 99
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `row_index` | int | Yes | 0-based row position from the current preview |
+| `column` | string | Yes | Column name to edit |
+| `value` | any \| `null` | Yes | New cell value. Send `null` to set the cell to NaN |
+
+**Dtype coercion rules:**
+
+| Column dtype | Accepted values | Rejected example |
+|---|---|---|
+| `int64` / `Int64` | Whole numbers (`99`, `"99"`) | `"hello"` |
+| `float64` | Decimal numbers (`3.14`, `"3.14"`) | `"hello"` |
+| `bool` | `true`, `false`, `"true"`, `"false"`, `"1"`, `"0"` | `"yes"` |
+| `datetime64` | ISO date strings (`"2024-01-15"`) | `"not-a-date"` |
+| `object` / `string` / `category` | Anything — coerced to string | — |
+
+- **Response (200 OK)**:
+```json
+{
+  "row_index": 4,
+  "column": "Quantity",
+  "value": 99
+}
+```
+> For datetime columns, `value` is returned as an ISO 8601 string (e.g. `"2024-01-15T00:00:00"`).
+> For `null` input, `value` is returned as `null`.
+
+- **Response (400)** — wrong dtype:
+```json
+{ "detail": "Cannot assign 'hello' to column 'Quantity' (dtype: int64)." }
+```
+- **Response (400)** — row out of range:
+```json
+{ "detail": "Row index 9999 is out of range (dataset has 1000 rows)." }
+```
+- **Response (400)** — column not found:
+```json
+{ "detail": "Column 'Quantity' not found in dataset." }
+```
+
+> Every successful cell edit is recorded in the activity log with `action: "UPDATE_CELL"` and the details `{ row_index, column, value }`.
+> Always use `row_index` values from the **current** preview response — row positions shift after operations like drop_duplicates.
 
 ---
 

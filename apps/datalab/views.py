@@ -5,7 +5,7 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
-from apps.datasets.models import Dataset
+from apps.datasets.models import Dataset, DatasetActivityLog
 from apps.core.data_engine import (
     get_cached_dataframe,
     invalidate_dataframe_cache,
@@ -13,12 +13,15 @@ from apps.core.data_engine import (
     apply_cast,
     validate_cast,
     apply_stored_casts,
+    update_cell as df_update_cell,
+    rename_column as df_rename_column,
     SUPPORTED_CASTS,
 )
 
 logger = logging.getLogger(__name__)
 
 _UNSUPPORTED_FORMAT = "Unsupported file format."
+_SAVE_FAILED = "Failed to save updated dataset."
 
 
 def _validate_casts(df, casts):
@@ -172,7 +175,7 @@ class DatalabViewSet(viewsets.ViewSet):
 
         if not save_dataframe(df, dataset.file.path, dataset.file_format):
             return Response(
-                {"detail": "Failed to save updated dataset."},
+                {"detail": _SAVE_FAILED},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -184,6 +187,129 @@ class DatalabViewSet(viewsets.ViewSet):
         dataset.save(update_fields=["column_casts"])
 
         return Response({"updated_columns": results})
+
+    def update_cell(self, request, dataset_id=None):
+        """PATCH /datalab/update-cell/{dataset_id}/"""
+        row_index = request.data.get("row_index")
+        column = request.data.get("column", "").strip()
+        value = request.data.get("value")  # None means set to null
+
+        if row_index is None or not column:
+            return Response(
+                {"detail": "'row_index' and 'column' are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(row_index, int) or row_index < 0:
+            return Response(
+                {"detail": "'row_index' must be a non-negative integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response(
+                {"detail": _UNSUPPORTED_FORMAT},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        if column not in df.columns:
+            return Response(
+                {"detail": f"Column '{column}' not found in dataset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if row_index >= len(df):
+            return Response(
+                {"detail": f"Row index {row_index} is out of range (dataset has {len(df)} rows)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            df, coerced = df_update_cell(df, row_index, column, value)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response(
+                {"detail": _SAVE_FAILED},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        invalidate_dataframe_cache(dataset.id)
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="UPDATE_CELL",
+            details={"row_index": row_index, "column": column, "value": str(coerced)},
+        )
+
+        serialized = coerced.isoformat() if hasattr(coerced, "isoformat") else coerced
+        return Response({"row_index": row_index, "column": column, "value": serialized})
+
+    def rename_column(self, request, dataset_id=None):
+        """POST /datalab/rename-column/{dataset_id}/"""
+        old_name = request.data.get("old_name", "").strip()
+        new_name = request.data.get("new_name", "").strip()
+
+        if not old_name or not new_name:
+            return Response(
+                {"detail": "'old_name' and 'new_name' are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if old_name == new_name:
+            return Response(
+                {"detail": "New name is identical to the current name."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response(
+                {"detail": _UNSUPPORTED_FORMAT},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if old_name not in df.columns:
+            return Response(
+                {"detail": f"Column '{old_name}' not found in dataset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if new_name in df.columns:
+            return Response(
+                {"detail": f"Column '{new_name}' already exists in dataset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        df = df_rename_column(df, old_name, new_name)
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response(
+                {"detail": _SAVE_FAILED},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        invalidate_dataframe_cache(dataset.id)
+
+        # Migrate stored cast key so the renamed column keeps its dtype override
+        if old_name in dataset.column_casts:
+            dataset.column_casts[new_name] = dataset.column_casts.pop(old_name)
+            dataset.save(update_fields=["column_casts"])
+
+        return Response({
+            "old_name": old_name,
+            "new_name": new_name,
+            "columns": list(df.columns),
+        })
 
     def drop_duplicates(self, request, dataset_id=None):
         """POST /datalab/drop-duplicates/{dataset_id}/"""
@@ -234,7 +360,7 @@ class DatalabViewSet(viewsets.ViewSet):
 
         if not save_dataframe(df, dataset.file.path, dataset.file_format):
             return Response(
-                {"detail": "Failed to save updated dataset."},
+                {"detail": _SAVE_FAILED},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
