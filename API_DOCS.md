@@ -912,26 +912,61 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 
 ### 4. Drop Duplicate Rows
 
-Remove duplicate rows from the dataset and persist the result to disk. Use `subset` to target specific ID/key columns (`product_id`, `transaction_id`, etc.) rather than checking all columns.
+Remove duplicate rows from the dataset and persist the result to disk. Choose a `mode` to control which rows are compared and which are kept.
 
 - **Endpoint**: `POST /datalab/drop-duplicates/{dataset_id}/`
 - **Auth Required**: Yes
-- **Request Body**:
+
+#### Modes
+
+| Mode | subset | keep | Behaviour |
+|---|---|---|---|
+| `"all_first"` | — | — | Compare all columns, keep first occurrence of each duplicate |
+| `"all_last"` | — | — | Compare all columns, keep last occurrence of each duplicate |
+| `"subset_keep"` | required | required | Compare only the listed columns, keep first or last match |
+| `"drop_all"` | optional | — | Remove every copy of any duplicate row — no survivors |
+
+#### Request Body
+
+**Mode `all_first`** (default — can omit body entirely):
+```json
+{ "mode": "all_first" }
+```
+
+**Mode `all_last`**:
+```json
+{ "mode": "all_last" }
+```
+
+**Mode `subset_keep`** — dedupe by specific columns, keep first or last:
 ```json
 {
+  "mode": "subset_keep",
   "subset": ["transaction_id", "product_id"],
   "keep": "first"
 }
 ```
 
+**Mode `drop_all`** — remove every row that has any duplicate (optional subset):
+```json
+{
+  "mode": "drop_all",
+  "subset": ["email"]
+}
+```
+
+#### Field Reference
+
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `subset` | array of strings | No | Columns to check for duplicates. Omit to compare all columns. |
-| `keep` | `"first"` \| `"last"` \| `false` | No | Which duplicate to keep. `"first"` (default) keeps the first occurrence, `"last"` keeps the last, `false` drops all copies including the original. |
+| `mode` | `"all_first"` \| `"all_last"` \| `"subset_keep"` \| `"drop_all"` | No | Dedup strategy. Defaults to `"all_first"`. |
+| `subset` | array of strings | Only for `subset_keep` | Columns to compare. Optional for `drop_all` (omit = all columns). |
+| `keep` | `"first"` \| `"last"` | Only for `subset_keep` | Which occurrence to keep. Defaults to `"first"`. |
 
 - **Response (200 OK)** — duplicates found and removed:
 ```json
 {
+  "mode": "subset_keep",
   "rows_before": 1000,
   "rows_after": 950,
   "rows_dropped": 50
@@ -948,13 +983,25 @@ Remove duplicate rows from the dataset and persist the result to disk. Use `subs
 }
 ```
 
+- **Response (400)** — invalid mode:
+```json
+{ "detail": "Invalid 'mode'. Choose one of: ['all_first', 'all_last', 'subset_keep', 'drop_all']" }
+```
+- **Response (400)** — `subset_keep` missing `subset`:
+```json
+{ "detail": "'subset' is required for mode 'subset_keep'." }
+```
+- **Response (400)** — `subset_keep` invalid `keep`:
+```json
+{ "detail": "For mode 'subset_keep', 'keep' must be 'first' or 'last'." }
+```
 - **Response (400)** — unknown column in `subset`:
 ```json
 { "detail": "Columns not found in dataset: ['bad_col']" }
 ```
-- **Response (400)** — invalid `keep` value:
+- **Response (400)** — `subset` not a list of strings:
 ```json
-{ "detail": "Invalid 'keep' value. Use 'first', 'last', or false." }
+{ "detail": "'subset' must be a non-empty list of column names." }
 ```
 
 > When duplicates are dropped, `dataset.file_size` is updated automatically to reflect the smaller file.

@@ -47,6 +47,61 @@ def _format_size(size_bytes):
     return f"{size_bytes:.1f} TB"
 
 
+_DEDUP_MODES = ("all_first", "all_last", "subset_keep", "drop_all")
+
+
+def _validate_dedup_params(mode, subset, keep):
+    if mode not in _DEDUP_MODES:
+        return Response(
+            {"detail": f"Invalid 'mode'. Choose one of: {list(_DEDUP_MODES)}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if mode == "subset_keep":
+        if subset is None:
+            return Response(
+                {"detail": "'subset' is required for mode 'subset_keep'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if keep not in ("first", "last"):
+            return Response(
+                {"detail": "For mode 'subset_keep', 'keep' must be 'first' or 'last'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    return None
+
+
+def _validate_subset_cols(subset, df):
+    if subset is None:
+        return None
+    if not isinstance(subset, list) or not subset:
+        return Response(
+            {"detail": "'subset' must be a non-empty list of column names."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not all(isinstance(c, str) for c in subset):
+        return Response(
+            {"detail": "'subset' must be a list of column name strings."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    unknown_cols = [c for c in subset if c not in df.columns]
+    if unknown_cols:
+        return Response(
+            {"detail": f"Columns not found in dataset: {unknown_cols}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return None
+
+
+def _apply_dedup(df, mode, subset, keep):
+    if mode == "all_first":
+        return df.drop_duplicates(keep="first")
+    if mode == "all_last":
+        return df.drop_duplicates(keep="last")
+    if mode == "subset_keep":
+        return df.drop_duplicates(subset=subset, keep=keep)
+    return df.drop_duplicates(subset=subset, keep=False)  # drop_all
+
+
 class DatalabViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -312,42 +367,35 @@ class DatalabViewSet(viewsets.ViewSet):
         })
 
     def drop_duplicates(self, request, dataset_id=None):
-        """POST /datalab/drop-duplicates/{dataset_id}/"""
+        """POST /datalab/drop-duplicates/{dataset_id}/
+
+        mode="all_first"   — compare all columns, keep first occurrence (default)
+        mode="all_last"    — compare all columns, keep last occurrence
+        mode="subset_keep" — compare subset columns, keep first/last (requires subset + keep)
+        mode="drop_all"    — drop every copy of any duplicate (optional subset)
+        """
+        mode = request.data.get("mode", "all_first")
         subset = request.data.get("subset")
         keep = request.data.get("keep", "first")
 
-        if keep not in ("first", "last", False):
-            return Response(
-                {"detail": "Invalid 'keep' value. Use 'first', 'last', or false."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        error = _validate_dedup_params(mode, subset, keep)
+        if error:
+            return error
 
         dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
         df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
         if df is None:
-            return Response(
-                {"detail": _UNSUPPORTED_FORMAT},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
 
         if dataset.column_casts:
             df = apply_stored_casts(df, dataset.column_casts)
 
-        if subset is not None:
-            if not isinstance(subset, list) or not subset:
-                return Response(
-                    {"detail": "'subset' must be a non-empty list of column names."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            unknown_cols = [c for c in subset if c not in df.columns]
-            if unknown_cols:
-                return Response(
-                    {"detail": f"Columns not found in dataset: {unknown_cols}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        error = _validate_subset_cols(subset, df)
+        if error:
+            return error
 
         rows_before = len(df)
-        df = df.drop_duplicates(subset=subset, keep=keep)
+        df = _apply_dedup(df, mode, subset, keep)
         rows_dropped = rows_before - len(df)
 
         if rows_dropped == 0:
@@ -370,6 +418,7 @@ class DatalabViewSet(viewsets.ViewSet):
         dataset.save(update_fields=["file_size", "updated_date"])
 
         return Response({
+            "mode": mode,
             "rows_before": rows_before,
             "rows_after": len(df),
             "rows_dropped": rows_dropped,
