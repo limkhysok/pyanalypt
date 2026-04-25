@@ -217,6 +217,109 @@ def rename_column(df, old_name, new_name):
     return df.rename(columns={old_name: new_name})
 
 
+def replace_values(df, replacements, columns=None):
+    """
+    Replace specific values across columns. None in replacements maps to np.nan.
+    columns=None applies to all columns. Returns (updated_df, cells_replaced_count).
+    """
+    target_cols = columns if columns is not None else df.columns.tolist()
+    pandas_replacements = {k: (np.nan if v is None else v) for k, v in replacements.items()}
+
+    cells_replaced = 0
+    for col in target_cols:
+        if col not in df.columns:
+            continue
+        cells_replaced += int(df[col].isin(replacements.keys()).sum())
+        df[col] = df[col].replace(pandas_replacements)
+
+    return df, cells_replaced
+
+
+def drop_nulls(df, axis, how="any", subset=None, thresh_pct=None):
+    """
+    Drop rows or columns containing nulls.
+
+    axis="rows"    — drop rows where any/all values are null (how), optionally scoped to subset.
+    axis="columns" — drop columns whose null % exceeds thresh_pct (0-100).
+
+    Returns (updated_df, stats_dict).
+    """
+    if axis == "rows":
+        rows_before = len(df)
+        df = df.dropna(axis=0, how=how, subset=subset)
+        return df, {
+            "rows_before": rows_before,
+            "rows_after": len(df),
+            "rows_dropped": rows_before - len(df),
+        }
+
+    # axis == "columns"
+    total_rows = len(df)
+    if total_rows == 0:
+        return df, {"columns_before": len(df.columns), "columns_after": len(df.columns), "columns_dropped": []}
+
+    null_pcts = df.isnull().sum() / total_rows * 100
+    cols_to_drop = null_pcts[null_pcts > thresh_pct].index.tolist()
+    cols_before = len(df.columns)
+    df = df.drop(columns=cols_to_drop)
+    return df, {
+        "columns_before": cols_before,
+        "columns_after": len(df.columns),
+        "columns_dropped": cols_to_drop,
+    }
+
+
+FILL_STRATEGIES = {"constant", "mean", "median", "mode", "ffill", "bfill"}
+
+
+def _apply_fill(series, strategy, value=None):
+    """
+    Apply one fill strategy to a single Series.
+    Returns the filled Series, or None if the column should be skipped.
+    """
+    if strategy == "constant":
+        return series.fillna(value)
+    if strategy in ("mean", "median"):
+        if not pd.api.types.is_numeric_dtype(series):
+            return None
+        fill_val = series.mean() if strategy == "mean" else series.median()
+        return series.fillna(fill_val)
+    if strategy == "mode":
+        mode_vals = series.mode()
+        return None if mode_vals.empty else series.fillna(mode_vals.iloc[0])
+    if strategy == "ffill":
+        return series.ffill()
+    if strategy == "bfill":
+        return series.bfill()
+    return series
+
+
+def fill_nulls(df, strategy, columns=None, value=None):
+    """
+    Fill null values using the given strategy across target columns.
+    mean/median silently skip non-numeric columns (reported in skipped_columns).
+    Returns (updated_df, cells_filled, skipped_columns).
+    """
+    target_cols = columns if columns is not None else df.columns.tolist()
+    cells_filled = 0
+    skipped_columns = []
+
+    for col in target_cols:
+        if col not in df.columns:
+            continue
+        null_before = int(df[col].isna().sum())
+        if null_before == 0:
+            continue
+        filled = _apply_fill(df[col], strategy, value)
+        if filled is None:
+            skipped_columns.append(col)
+            continue
+        df[col] = filled
+        cells_filled += null_before - int(df[col].isna().sum())
+
+    return df, cells_filled, skipped_columns
+
+
 def normalize_columns(df):
     """
     Standardize column names to lowercase_with_underscores.

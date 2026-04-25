@@ -773,6 +773,9 @@ All endpoints below are under `/api/v1/datalab/`.
 | 4 | `POST` | `/datalab/drop-duplicates/{dataset_id}/` | Remove duplicate rows and persist the cleaned dataset |
 | 5 | `POST` | `/datalab/rename-column/{dataset_id}/` | Rename a column header and persist the change |
 | 6 | `PATCH` | `/datalab/update-cell/{dataset_id}/` | Edit a single cell value with dtype validation |
+| 7 | `POST` | `/datalab/replace-values/{dataset_id}/` | Replace sentinel/garbage values with NaN or another value |
+| 8 | `POST` | `/datalab/drop-nulls/{dataset_id}/` | Drop rows or columns containing null values |
+| 9 | `POST` | `/datalab/fill-nulls/{dataset_id}/` | Fill null values using a chosen imputation strategy |
 
 ---
 
@@ -1111,6 +1114,259 @@ Edit a single cell at a specific row and column. The value is coerced to match t
 
 > Every successful cell edit is recorded in the activity log with `action: "UPDATE_CELL"` and the details `{ row_index, column, value }`.
 > Always use `row_index` values from the **current** preview response — row positions shift after operations like drop_duplicates.
+
+---
+
+### 7. Replace Values
+
+Replace specific sentinel or garbage values (e.g. `"N/A"`, `"-"`, `"?"`) with `null` (NaN) or any other value, across all columns or a targeted subset.
+
+- **Endpoint**: `POST /datalab/replace-values/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `replacements` | object | Yes | Map of `{ "old_value": new_value }`. Use `null` as the new value to convert to NaN. |
+| `columns` | array of strings | No | Columns to apply replacements to. Omit to apply across all columns. |
+
+**Replace common sentinel strings with NaN (all columns):**
+```json
+{
+  "replacements": { "N/A": null, "-": null, "?": null, "none": null, "null": null }
+}
+```
+
+**Replace a specific value in targeted columns only:**
+```json
+{
+  "replacements": { "999": null, "0": null },
+  "columns": ["age", "salary"]
+}
+```
+
+**Replace one value with another (not NaN):**
+```json
+{
+  "replacements": { "Yes": "true", "No": "false" },
+  "columns": ["is_active"]
+}
+```
+
+#### Responses
+
+- **Response (200)** — replacements applied:
+```json
+{
+  "replacements": { "N/A": null, "-": null },
+  "columns_affected": ["name", "email", "country"],
+  "cells_replaced": 47
+}
+```
+
+- **Response (200)** — no matches found (no file write occurs):
+```json
+{
+  "replacements": { "N/A": null },
+  "columns_affected": ["name", "email"],
+  "cells_replaced": 0,
+  "detail": "No matching values found."
+}
+```
+
+- **Response (400)** — missing or invalid `replacements`:
+```json
+{ "detail": "'replacements' must be an object mapping old values to new values." }
+```
+
+- **Response (400)** — column not found:
+```json
+{ "detail": "Columns not found in dataset: ['unknown_col']" }
+```
+
+> Run `replace_values` **before** `fill_nulls` or `drop_nulls` — real-world CSVs often contain
+> string sentinels (`"N/A"`, `"-"`) that pandas does not recognise as NaN, causing fill/drop
+> operations to silently miss them.
+
+---
+
+### 8. Drop Nulls
+
+Drop rows or entire columns that contain null values. Covers two axes in one endpoint.
+
+- **Endpoint**: `POST /datalab/drop-nulls/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `axis` | string | No | `"rows"` (default) or `"columns"` |
+| `how` | string | No | Rows only — `"any"` (default) or `"all"` |
+| `subset` | array of strings | No | Rows only — check nulls only in these columns |
+| `thresh_pct` | number (0–100) | Columns only | Drop columns whose null % exceeds this threshold |
+
+**Drop rows where ANY column is null:**
+```json
+{ "axis": "rows", "how": "any" }
+```
+
+**Drop rows where ALL columns are null:**
+```json
+{ "axis": "rows", "how": "all" }
+```
+
+**Drop rows where a key column is null:**
+```json
+{ "axis": "rows", "how": "any", "subset": ["user_id", "transaction_date"] }
+```
+
+**Drop columns with more than 70% null values:**
+```json
+{ "axis": "columns", "thresh_pct": 70 }
+```
+
+#### Responses
+
+- **Response (200)** — rows dropped:
+```json
+{
+  "axis": "rows",
+  "rows_before": 1000,
+  "rows_after": 943,
+  "rows_dropped": 57
+}
+```
+
+- **Response (200)** — columns dropped:
+```json
+{
+  "axis": "columns",
+  "columns_before": 12,
+  "columns_after": 9,
+  "columns_dropped": ["notes", "legacy_id", "deprecated_field"]
+}
+```
+
+- **Response (200)** — nothing matched (no file write occurs):
+```json
+{
+  "axis": "rows",
+  "rows_before": 1000,
+  "rows_after": 1000,
+  "rows_dropped": 0,
+  "detail": "No null rows/columns matched the criteria."
+}
+```
+
+- **Response (400)** — missing `thresh_pct` for column axis:
+```json
+{ "detail": "'thresh_pct' is required when axis is 'columns'." }
+```
+
+- **Response (400)** — invalid `how`:
+```json
+{ "detail": "'how' must be 'any' or 'all'." }
+```
+
+> When dropping columns, `column_casts` entries for removed columns are not automatically
+> cleaned up — they are silently ignored on next load since `apply_stored_casts` skips missing columns.
+> Re-fetch `inspect` after this operation as column count will have changed.
+
+---
+
+### 9. Fill Nulls
+
+Fill missing (NaN) values using a chosen imputation strategy. Apply to all columns or a targeted subset.
+
+- **Endpoint**: `POST /datalab/fill-nulls/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Strategies
+
+| Strategy | Description | Applies to |
+|---|---|---|
+| `constant` | Fill with a literal value (requires `value` field) | Any dtype |
+| `mean` | Fill with column mean | Numeric only |
+| `median` | Fill with column median (robust to outliers) | Numeric only |
+| `mode` | Fill with most frequent value | Any dtype |
+| `ffill` | Forward fill — use the previous row's value | Any dtype |
+| `bfill` | Backward fill — use the next row's value | Any dtype |
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `strategy` | string | Yes | One of the strategies above |
+| `value` | any | When `strategy` is `"constant"` | The literal fill value |
+| `columns` | array of strings | No | Columns to fill. Omit to apply to all columns. |
+
+**Fill all nulls with median (numeric columns only):**
+```json
+{ "strategy": "median" }
+```
+
+**Fill a categorical column with a constant:**
+```json
+{
+  "strategy": "constant",
+  "value": "Unknown",
+  "columns": ["country", "status"]
+}
+```
+
+**Forward-fill a time-series column:**
+```json
+{
+  "strategy": "ffill",
+  "columns": ["daily_price"]
+}
+```
+
+**Fill numeric nulls with mean across specific columns:**
+```json
+{
+  "strategy": "mean",
+  "columns": ["age", "salary", "score"]
+}
+```
+
+#### Responses
+
+- **Response (200)** — nulls filled:
+```json
+{
+  "strategy": "median",
+  "cells_filled": 143,
+  "skipped_columns": ["name", "country"]
+}
+```
+> `skipped_columns` — columns that were skipped because the strategy is incompatible with their dtype
+> (e.g. `mean`/`median` on a string column). No error is raised — they are silently skipped and reported here.
+
+- **Response (200)** — nothing to fill (no file write occurs):
+```json
+{
+  "strategy": "mean",
+  "cells_filled": 0,
+  "skipped_columns": [],
+  "detail": "No null values found to fill."
+}
+```
+
+- **Response (400)** — invalid strategy:
+```json
+{ "detail": "'strategy' must be one of: ['bfill', 'constant', 'ffill', 'mean', 'median', 'mode']" }
+```
+
+- **Response (400)** — missing `value` for constant strategy:
+```json
+{ "detail": "'value' is required when strategy is 'constant'." }
+```
+
+> Recommended order: `replace_values` → `drop_nulls` → `fill_nulls`.
+> Run `replace_values` first so sentinel strings (`"N/A"`, `"-"`) become real NaN before fill strategies are applied.
 
 ---
 

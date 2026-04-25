@@ -15,6 +15,10 @@ from apps.core.data_engine import (
     apply_stored_casts,
     update_cell as df_update_cell,
     rename_column as df_rename_column,
+    replace_values as df_replace_values,
+    drop_nulls as df_drop_nulls,
+    fill_nulls as df_fill_nulls,
+    FILL_STRATEGIES,
     SUPPORTED_CASTS,
 )
 
@@ -100,6 +104,31 @@ def _apply_dedup(df, mode, subset, keep):
     if mode == "subset_keep":
         return df.drop_duplicates(subset=subset, keep=keep)
     return df.drop_duplicates(subset=subset, keep=False)  # drop_all
+
+
+def _validate_drop_nulls_params(axis, how, thresh_pct):
+    if axis not in ("rows", "columns"):
+        return Response(
+            {"detail": "'axis' must be 'rows' or 'columns'."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if axis == "rows" and how not in ("any", "all"):
+        return Response(
+            {"detail": "'how' must be 'any' or 'all'."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if axis == "columns":
+        if thresh_pct is None:
+            return Response(
+                {"detail": "'thresh_pct' is required when axis is 'columns'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(thresh_pct, (int, float)) or not (0 <= thresh_pct <= 100):
+            return Response(
+                {"detail": "'thresh_pct' must be a number between 0 and 100."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    return None
 
 
 class DatalabViewSet(viewsets.ViewSet):
@@ -422,4 +451,149 @@ class DatalabViewSet(viewsets.ViewSet):
             "rows_before": rows_before,
             "rows_after": len(df),
             "rows_dropped": rows_dropped,
+        })
+
+    def replace_values(self, request, dataset_id=None):
+        """POST /datalab/replace-values/{dataset_id}/"""
+        replacements = request.data.get("replacements")
+        columns = request.data.get("columns")
+
+        if not replacements or not isinstance(replacements, dict):
+            return Response(
+                {"detail": "'replacements' must be an object mapping old values to new values."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        if columns is not None:
+            if not isinstance(columns, list) or not columns:
+                return Response(
+                    {"detail": "'columns' must be a non-empty list of column names."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            unknown_cols = [c for c in columns if c not in df.columns]
+            if unknown_cols:
+                return Response(
+                    {"detail": f"Columns not found in dataset: {unknown_cols}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        df, cells_replaced = df_replace_values(df, replacements, columns)
+
+        if cells_replaced == 0:
+            return Response({
+                "replacements": replacements,
+                "columns_affected": columns or list(df.columns),
+                "cells_replaced": 0,
+                "detail": "No matching values found.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+
+        return Response({
+            "replacements": replacements,
+            "columns_affected": columns or list(df.columns),
+            "cells_replaced": cells_replaced,
+        })
+
+    def drop_nulls(self, request, dataset_id=None):
+        """POST /datalab/drop-nulls/{dataset_id}/"""
+        axis = request.data.get("axis", "rows")
+        how = request.data.get("how", "any")
+        subset = request.data.get("subset")
+        thresh_pct = request.data.get("thresh_pct")
+
+        error = _validate_drop_nulls_params(axis, how, thresh_pct)
+        if error:
+            return error
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        if axis == "rows" and subset is not None:
+            error = _validate_subset_cols(subset, df)
+            if error:
+                return error
+
+        df, stats = df_drop_nulls(df, axis, how=how, subset=subset, thresh_pct=thresh_pct)
+
+        dropped_count = stats.get("rows_dropped", 0) or len(stats.get("columns_dropped", []))
+        if dropped_count == 0:
+            return Response({"axis": axis, **stats, "detail": "No null rows/columns matched the criteria."})
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        return Response({"axis": axis, **stats})
+
+    def fill_nulls(self, request, dataset_id=None):
+        """POST /datalab/fill-nulls/{dataset_id}/"""
+        strategy = request.data.get("strategy", "").strip()
+        columns = request.data.get("columns")
+        value = request.data.get("value")
+
+        if strategy not in FILL_STRATEGIES:
+            return Response(
+                {"detail": f"'strategy' must be one of: {sorted(FILL_STRATEGIES)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if strategy == "constant" and value is None:
+            return Response(
+                {"detail": "'value' is required when strategy is 'constant'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        if columns is not None:
+            error = _validate_subset_cols(columns, df)
+            if error:
+                return error
+
+        df, cells_filled, skipped_columns = df_fill_nulls(df, strategy, columns=columns, value=value)
+
+        if cells_filled == 0:
+            return Response({
+                "strategy": strategy,
+                "cells_filled": 0,
+                "skipped_columns": skipped_columns,
+                "detail": "No null values found to fill.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+
+        return Response({
+            "strategy": strategy,
+            "cells_filled": cells_filled,
+            "skipped_columns": skipped_columns,
         })
