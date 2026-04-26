@@ -137,11 +137,12 @@ class DatalabViewSet(viewsets.ViewSet):
     def preview(self, request, dataset_id=None):
         """GET /datalab/preview/{dataset_id}/"""
         try:
-            page = max(1, int(request.query_params.get("page", 1)))
-            page_size = min(500, max(1, int(request.query_params.get("page_size", 100))))
+            limit = int(request.query_params.get("limit", 100))
+            if limit < 0:
+                raise ValueError
         except (TypeError, ValueError):
             return Response(
-                {"detail": "'page' and 'page_size' must be positive integers."},
+                {"detail": "'limit' must be a non-negative integer (0 = all rows)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -157,10 +158,7 @@ class DatalabViewSet(viewsets.ViewSet):
             df = apply_stored_casts(df, dataset.column_casts)
 
         total_rows = len(df)
-        total_pages = max(1, -(-total_rows // page_size))  # ceiling division
-        start = (page - 1) * page_size
-        end = start + page_size
-        page_df = df.iloc[start:end]
+        view_df = df if limit == 0 else df.iloc[:limit]
 
         return Response({
             "dataset_id": dataset.id,
@@ -169,11 +167,9 @@ class DatalabViewSet(viewsets.ViewSet):
             "dataset_size": _format_size(dataset.file_size),
             "total_rows": total_rows,
             "total_columns": len(df.columns),
-            "total_pages": total_pages,
-            "page": page,
-            "page_size": page_size,
+            "limit": limit,
             "columns": list(df.columns),
-            "rows": page_df.astype(object).where(pd.notna(page_df), None).to_dict(orient="records"),
+            "rows": view_df.astype(object).where(pd.notna(view_df), None).to_dict(orient="records"),
         })
 
     def inspect(self, request, dataset_id=None):

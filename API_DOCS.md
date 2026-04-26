@@ -781,16 +781,17 @@ All endpoints below are under `/api/v1/datalab/`.
 
 ### 1. Preview Dataset as Table
 
-Returns a paginated slice of the dataset rendered as rows and columns for display in a data table component.
+Returns a row-limited slice of the dataset rendered as rows and columns for display in a data table component.
 
 - **Endpoint**: `GET /datalab/preview/{dataset_id}/`
 - **Auth Required**: Yes
 - **Query Params**:
 
-| Param | Type | Default | Max | Description |
-|---|---|---|---|---|
-| `page` | int | `1` | — | Page number (1-based) |
-| `page_size` | int | `100` | `500` | Rows per page |
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `limit` | int | `100` | Number of rows to return. `0` returns all rows. |
+
+Typical UI values: `100`, `200`, `500`, `0` (All).
 
 - **Response (200 OK)**:
 ```json
@@ -801,9 +802,7 @@ Returns a paginated slice of the dataset rendered as rows and columns for displa
   "dataset_size": "1.0 MB",
   "total_rows": 1000,
   "total_columns": 3,
-  "total_pages": 10,
-  "page": 1,
-  "page_size": 100,
+  "limit": 100,
   "columns": ["Name", "Age", "Salary"],
   "rows": [
     { "Name": "Alice", "Age": 30, "Salary": 50000 },
@@ -812,15 +811,15 @@ Returns a paginated slice of the dataset rendered as rows and columns for displa
 }
 ```
 
-- **Response (400)** — invalid pagination params:
+- **Response (400)** — invalid limit:
 ```json
-{ "detail": "'page' and 'page_size' must be positive integers." }
+{ "detail": "'limit' must be a non-negative integer (0 = all rows)." }
 ```
 
 > `null` is used for missing values (`NaN`). The `columns` array preserves the original column order.
 > `dataset_size` is a human-readable string (`B`, `KB`, `MB`, `GB`, `TB`).
-> `total_rows` and `total_columns` always reflect the full dataset, not just the current page.
-> `rows` contains only the slice for the requested page — use `total_pages` to build pagination controls.
+> `total_rows` always reflects the full dataset regardless of `limit`.
+> `limit: 0` in the response means all rows were returned.
 
 ---
 
