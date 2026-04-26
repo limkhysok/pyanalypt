@@ -781,10 +781,17 @@ All endpoints below are under `/api/v1/datalab/`.
 
 ### 1. Preview Dataset as Table
 
-Returns the full dataset rendered as rows and columns for display in a data table component.
+Returns a paginated slice of the dataset rendered as rows and columns for display in a data table component.
 
 - **Endpoint**: `GET /datalab/preview/{dataset_id}/`
 - **Auth Required**: Yes
+- **Query Params**:
+
+| Param | Type | Default | Max | Description |
+|---|---|---|---|---|
+| `page` | int | `1` | — | Page number (1-based) |
+| `page_size` | int | `100` | `500` | Rows per page |
+
 - **Response (200 OK)**:
 ```json
 {
@@ -794,6 +801,9 @@ Returns the full dataset rendered as rows and columns for display in a data tabl
   "dataset_size": "1.0 MB",
   "total_rows": 1000,
   "total_columns": 3,
+  "total_pages": 10,
+  "page": 1,
+  "page_size": 100,
   "columns": ["Name", "Age", "Salary"],
   "rows": [
     { "Name": "Alice", "Age": 30, "Salary": 50000 },
@@ -802,8 +812,15 @@ Returns the full dataset rendered as rows and columns for display in a data tabl
 }
 ```
 
+- **Response (400)** — invalid pagination params:
+```json
+{ "detail": "'page' and 'page_size' must be positive integers." }
+```
+
 > `null` is used for missing values (`NaN`). The `columns` array preserves the original column order.
 > `dataset_size` is a human-readable string (`B`, `KB`, `MB`, `GB`, `TB`).
+> `total_rows` and `total_columns` always reflect the full dataset, not just the current page.
+> `rows` contains only the slice for the requested page — use `total_pages` to build pagination controls.
 
 ---
 
@@ -1188,6 +1205,7 @@ Replace specific sentinel or garbage values (e.g. `"N/A"`, `"-"`, `"?"`) with `n
 > Run `replace_values` **before** `fill_nulls` or `drop_nulls` — real-world CSVs often contain
 > string sentinels (`"N/A"`, `"-"`) that pandas does not recognise as NaN, causing fill/drop
 > operations to silently miss them.
+> When replacements are applied, `dataset.file_size` is updated automatically to reflect the new file.
 
 ---
 
@@ -1367,6 +1385,7 @@ Fill missing (NaN) values using a chosen imputation strategy. Apply to all colum
 
 > Recommended order: `replace_values` → `drop_nulls` → `fill_nulls`.
 > Run `replace_values` first so sentinel strings (`"N/A"`, `"-"`) become real NaN before fill strategies are applied.
+> When nulls are filled, `dataset.file_size` is updated automatically to reflect the new file.
 
 ---
 

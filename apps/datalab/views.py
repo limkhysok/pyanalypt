@@ -136,6 +136,15 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def preview(self, request, dataset_id=None):
         """GET /datalab/preview/{dataset_id}/"""
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+            page_size = min(500, max(1, int(request.query_params.get("page_size", 100))))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "'page' and 'page_size' must be positive integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
         df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
         if df is None:
@@ -147,15 +156,24 @@ class DatalabViewSet(viewsets.ViewSet):
         if dataset.column_casts:
             df = apply_stored_casts(df, dataset.column_casts)
 
+        total_rows = len(df)
+        total_pages = max(1, -(-total_rows // page_size))  # ceiling division
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_df = df.iloc[start:end]
+
         return Response({
             "dataset_id": dataset.id,
             "file_name": dataset.file_name,
             "file_format": dataset.file_format,
             "dataset_size": _format_size(dataset.file_size),
-            "total_rows": len(df),
+            "total_rows": total_rows,
             "total_columns": len(df.columns),
+            "total_pages": total_pages,
+            "page": page,
+            "page_size": page_size,
             "columns": list(df.columns),
-            "rows": df.astype(object).where(pd.notna(df), None).to_dict(orient="records"),
+            "rows": page_df.astype(object).where(pd.notna(page_df), None).to_dict(orient="records"),
         })
 
     def inspect(self, request, dataset_id=None):
@@ -257,18 +275,17 @@ class DatalabViewSet(viewsets.ViewSet):
                     "detail": str(exc),
                 })
 
-        if not save_dataframe(df, dataset.file.path, dataset.file_format):
-            return Response(
-                {"detail": _SAVE_FAILED},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        invalidate_dataframe_cache(dataset.id)
-
         # Persist cast preferences so they survive reload (flat files lose type info)
         successful = {r["column"]: casts[r["column"]] for r in results if r["status"] == "ok"}
-        dataset.column_casts = {**dataset.column_casts, **successful}
-        dataset.save(update_fields=["column_casts"])
+        if successful:
+            if not save_dataframe(df, dataset.file.path, dataset.file_format):
+                return Response(
+                    {"detail": _SAVE_FAILED},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            invalidate_dataframe_cache(dataset.id)
+            dataset.column_casts = {**dataset.column_casts, **successful}
+            dataset.save(update_fields=["column_casts"])
 
         return Response({"updated_columns": results})
 
@@ -500,6 +517,9 @@ class DatalabViewSet(viewsets.ViewSet):
 
         invalidate_dataframe_cache(dataset.id)
 
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
         return Response({
             "replacements": replacements,
             "columns_affected": columns or list(df.columns),
@@ -548,7 +568,7 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def fill_nulls(self, request, dataset_id=None):
         """POST /datalab/fill-nulls/{dataset_id}/"""
-        strategy = request.data.get("strategy", "").strip()
+        strategy = str(request.data.get("strategy", "")).strip()
         columns = request.data.get("columns")
         value = request.data.get("value")
 
@@ -591,6 +611,9 @@ class DatalabViewSet(viewsets.ViewSet):
             return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         invalidate_dataframe_cache(dataset.id)
+
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
 
         return Response({
             "strategy": strategy,
