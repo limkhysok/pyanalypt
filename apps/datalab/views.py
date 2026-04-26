@@ -18,6 +18,7 @@ from apps.core.data_engine import (
     replace_values as df_replace_values,
     drop_nulls as df_drop_nulls,
     fill_nulls as df_fill_nulls,
+    describe_dataframe,
     FILL_STRATEGIES,
     SUPPORTED_CASTS,
 )
@@ -561,6 +562,18 @@ class DatalabViewSet(viewsets.ViewSet):
         dataset.save(update_fields=["file_size", "updated_date"])
 
         return Response({"axis": axis, **stats})
+
+    def describe(self, request, dataset_id=None):
+        """GET /datalab/describe/{dataset_id}/"""
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        return Response({"columns": describe_dataframe(df)})
 
     def fill_nulls(self, request, dataset_id=None):
         """POST /datalab/fill-nulls/{dataset_id}/"""

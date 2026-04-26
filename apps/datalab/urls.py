@@ -3,6 +3,7 @@ from .views import DatalabViewSet
 
 preview = DatalabViewSet.as_view({"get": "preview"})
 inspect = DatalabViewSet.as_view({"get": "inspect"})
+describe = DatalabViewSet.as_view({"get": "describe"})
 cast = DatalabViewSet.as_view({"post": "cast_columns"})
 drop_duplicates = DatalabViewSet.as_view({"post": "drop_duplicates"})
 update_cell = DatalabViewSet.as_view({"patch": "update_cell"})
@@ -14,6 +15,7 @@ fill_nulls = DatalabViewSet.as_view({"post": "fill_nulls"})
 urlpatterns = [
     path("preview/<int:dataset_id>/", preview, name="datalab-preview"),
     path("inspect/<int:dataset_id>/", inspect, name="datalab-inspect"),
+    path("describe/<int:dataset_id>/", describe, name="datalab-describe"),
     path("cast/<int:dataset_id>/", cast, name="datalab-cast"),
     path("drop-duplicates/<int:dataset_id>/", drop_duplicates, name="datalab-drop-duplicates"),
     path("rename-column/<int:dataset_id>/", rename_column, name="datalab-rename-column"),

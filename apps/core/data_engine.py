@@ -334,6 +334,19 @@ def normalize_columns(df):
     return df
 
 
+def describe_dataframe(df):
+    described = df.describe(include='all')
+    result = {}
+    for col in described.columns:
+        col_stats = {}
+        for stat, val in described[col].items():
+            if pd.isna(val):
+                continue
+            col_stats[stat] = val.item() if hasattr(val, "item") else val
+        result[col] = col_stats
+    return result
+
+
 def generate_summary_stats(df):
     """
     Per-column summary statistics suitable for JSON serialization.

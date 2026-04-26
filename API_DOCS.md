@@ -769,13 +769,14 @@ All endpoints below are under `/api/v1/datalab/`.
 |---|--------|----------|-------------|
 | 1 | `GET` | `/datalab/preview/{dataset_id}/` | Render dataset as a data table |
 | 2 | `GET` | `/datalab/inspect/{dataset_id}/` | Return per-column dtype, null counts, null %, and memory usage |
-| 3 | `POST` | `/datalab/cast/{dataset_id}/` | Cast one or more columns to a new dtype and persist the change |
-| 4 | `POST` | `/datalab/drop-duplicates/{dataset_id}/` | Remove duplicate rows and persist the cleaned dataset |
-| 5 | `POST` | `/datalab/rename-column/{dataset_id}/` | Rename a column header and persist the change |
-| 6 | `PATCH` | `/datalab/update-cell/{dataset_id}/` | Edit a single cell value with dtype validation |
-| 7 | `POST` | `/datalab/replace-values/{dataset_id}/` | Replace sentinel/garbage values with NaN or another value |
-| 8 | `POST` | `/datalab/drop-nulls/{dataset_id}/` | Drop rows or columns containing null values |
-| 9 | `POST` | `/datalab/fill-nulls/{dataset_id}/` | Fill null values using a chosen imputation strategy |
+| 3 | `GET` | `/datalab/describe/{dataset_id}/` | Return descriptive statistics for all columns (`df.describe()`) |
+| 4 | `POST` | `/datalab/cast/{dataset_id}/` | Cast one or more columns to a new dtype and persist the change |
+| 5 | `POST` | `/datalab/drop-duplicates/{dataset_id}/` | Remove duplicate rows and persist the cleaned dataset |
+| 6 | `POST` | `/datalab/rename-column/{dataset_id}/` | Rename a column header and persist the change |
+| 7 | `PATCH` | `/datalab/update-cell/{dataset_id}/` | Edit a single cell value with dtype validation |
+| 8 | `POST` | `/datalab/replace-values/{dataset_id}/` | Replace sentinel/garbage values with NaN or another value |
+| 9 | `POST` | `/datalab/drop-nulls/{dataset_id}/` | Drop rows or columns containing null values |
+| 10 | `POST` | `/datalab/fill-nulls/{dataset_id}/` | Fill null values using a chosen imputation strategy |
 
 ---
 
@@ -875,7 +876,54 @@ Returns structured per-column metadata: dtype, null counts, null percentage, and
 
 ---
 
-### 3. Cast Column Dtypes
+### 3. Describe Dataset (Summary Statistics)
+
+Returns descriptive statistics for every column using pandas `df.describe(include='all')`. Numeric columns get distribution stats; categorical/string columns get frequency stats. `NaN` stats are omitted from the response.
+
+- **Endpoint**: `GET /datalab/describe/{dataset_id}/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+{
+  "columns": {
+    "Age": {
+      "count": 988.0,
+      "mean": 35.2,
+      "std": 12.1,
+      "min": 18.0,
+      "25%": 25.0,
+      "50%": 34.0,
+      "75%": 45.0,
+      "max": 72.0
+    },
+    "Salary": {
+      "count": 1000.0,
+      "mean": 58400.0,
+      "std": 14200.0,
+      "min": 22000.0,
+      "25%": 48000.0,
+      "50%": 56000.0,
+      "75%": 68000.0,
+      "max": 120000.0
+    },
+    "Country": {
+      "count": 1000.0,
+      "unique": 42.0,
+      "top": "United States",
+      "freq": 312.0
+    }
+  }
+}
+```
+
+> **Numeric columns** — `count`, `mean`, `std`, `min`, `25%`, `50%`, `75%`, `max`.
+> **Categorical / string columns** — `count`, `unique`, `top` (most frequent value), `freq` (how many times it appears).
+> Stats that don't apply to a column type (e.g. `mean` on a string column) are omitted — not returned as `null`.
+> `count` reflects non-null rows only — compare against `total_rows` from `inspect` to derive the null count.
+
+---
+
+### 4. Cast Column Dtypes
 
 Cast one or more columns to a new dtype. The change is persisted back to the dataset file on disk. Use this after `inspect` reveals columns with wrong types (e.g. `Date` as `object` instead of `datetime64`).
 
@@ -929,7 +977,7 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 ```
 ---
 
-### 4. Drop Duplicate Rows
+### 5. Drop Duplicate Rows
 
 Remove duplicate rows from the dataset and persist the result to disk. Choose a `mode` to control which rows are compared and which are kept.
 
@@ -1028,7 +1076,7 @@ Remove duplicate rows from the dataset and persist the result to disk. Choose a 
 
 ---
 
-### 5. Rename Column Header
+### 6. Rename Column Header
 
 Rename a single column header and persist the change to disk. If the column had a stored dtype cast, the cast is automatically migrated to the new name.
 
@@ -1073,7 +1121,7 @@ Rename a single column header and persist the change to disk. If the column had 
 
 ---
 
-### 6. Update Cell Value
+### 7. Update Cell Value
 
 Edit a single cell at a specific row and column. The value is coerced to match the column's existing dtype — if it can't be converted, a `400` is returned before anything is written to disk.
 
@@ -1133,7 +1181,7 @@ Edit a single cell at a specific row and column. The value is coerced to match t
 
 ---
 
-### 7. Replace Values
+### 8. Replace Values
 
 Replace specific sentinel or garbage values (e.g. `"N/A"`, `"-"`, `"?"`) with `null` (NaN) or any other value, across all columns or a targeted subset.
 
@@ -1208,7 +1256,7 @@ Replace specific sentinel or garbage values (e.g. `"N/A"`, `"-"`, `"?"`) with `n
 
 ---
 
-### 8. Drop Nulls
+### 9. Drop Nulls
 
 Drop rows or entire columns that contain null values. Covers two axes in one endpoint.
 
@@ -1293,7 +1341,7 @@ Drop rows or entire columns that contain null values. Covers two axes in one end
 
 ---
 
-### 9. Fill Nulls
+### 10. Fill Nulls
 
 Fill missing (NaN) values using a chosen imputation strategy. Apply to all columns or a targeted subset.
 
