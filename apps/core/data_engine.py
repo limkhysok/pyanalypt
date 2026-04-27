@@ -334,6 +334,140 @@ def normalize_columns(df):
     return df
 
 
+SUPPORTED_FORMULAS = ("divide", "multiply", "add", "subtract")
+
+
+def fill_derived(df, target, formula, operand_a, operand_b):
+    """
+    Fill nulls in `target` by computing `operand_a <formula> operand_b`.
+    Only fills rows where target is null AND both operands are non-null (and
+    non-zero for the denominator when formula is 'divide').
+    Returns (df, cells_filled).
+    """
+    mask = df[target].isnull() & df[operand_a].notnull() & df[operand_b].notnull()
+
+    if formula == "divide":
+        mask = mask & (df[operand_b] != 0)
+        result = df.loc[mask, operand_a] / df.loc[mask, operand_b]
+    elif formula == "multiply":
+        result = df.loc[mask, operand_a] * df.loc[mask, operand_b]
+    elif formula == "add":
+        result = df.loc[mask, operand_a] + df.loc[mask, operand_b]
+    else:  # subtract
+        result = df.loc[mask, operand_a] - df.loc[mask, operand_b]
+
+    cells_filled = int(mask.sum())
+    if cells_filled > 0:
+        if pd.api.types.is_integer_dtype(df[target].dtype):
+            result = result.round().astype("Int64")
+        df.loc[mask, target] = result
+
+    return df, cells_filled
+
+
+def validate_formula(df, result_column, formula, operand_a, operand_b, tolerance=0.01):
+    """
+    Check whether result_column ≈ operand_a <formula> operand_b within tolerance.
+    Only inspects rows where all three columns are non-null (and denominator != 0
+    for divide). Returns a dict with error counts and up to 5 sample error rows.
+    """
+    mask = (
+        df[result_column].notnull()
+        & df[operand_a].notnull()
+        & df[operand_b].notnull()
+    )
+    if formula == "divide":
+        mask = mask & (df[operand_b] != 0)
+
+    checked = df[mask]
+    checked_count = len(checked)
+
+    if checked_count == 0:
+        return {
+            "total_rows": len(df),
+            "checked_rows": 0,
+            "error_rows": 0,
+            "error_pct": 0.0,
+            "tolerance": tolerance,
+            "sample_errors": [],
+        }
+
+    if formula == "divide":
+        calculated = checked[operand_a] / checked[operand_b]
+    elif formula == "multiply":
+        calculated = checked[operand_a] * checked[operand_b]
+    elif formula == "add":
+        calculated = checked[operand_a] + checked[operand_b]
+    else:  # subtract
+        calculated = checked[operand_a] - checked[operand_b]
+
+    diff = (calculated - checked[result_column]).abs()
+    error_mask = diff > tolerance
+    error_rows = checked[error_mask]
+    error_count = len(error_rows)
+
+    sample = []
+    for idx, row in error_rows.head(5).iterrows():
+        sample.append({
+            "row_index": int(idx),
+            operand_a: (row[operand_a].item() if hasattr(row[operand_a], "item") else row[operand_a]),
+            operand_b: (row[operand_b].item() if hasattr(row[operand_b], "item") else row[operand_b]),
+            result_column: (row[result_column].item() if hasattr(row[result_column], "item") else row[result_column]),
+            "calculated": round(float(calculated[idx]), 4),
+            "diff": round(float(diff[idx]), 4),
+        })
+
+    return {
+        "total_rows": len(df),
+        "checked_rows": checked_count,
+        "error_rows": error_count,
+        "error_pct": round(error_count / checked_count * 100, 1) if checked_count > 0 else 0.0,
+        "tolerance": tolerance,
+        "sample_errors": sample,
+    }
+
+
+def fix_formula_errors(df, target, formula, operand_a, operand_b, tolerance=0.01):
+    """
+    Find rows where target != operand_a <formula> operand_b (beyond tolerance)
+    and overwrite target with the recomputed value.
+    Only touches rows where all three columns are non-null (and denominator != 0
+    for divide). Returns (df, cells_fixed).
+    """
+    mask = (
+        df[target].notnull()
+        & df[operand_a].notnull()
+        & df[operand_b].notnull()
+    )
+    if formula == "divide":
+        mask = mask & (df[operand_b] != 0)
+
+    checked = df[mask]
+    if checked.empty:
+        return df, 0
+
+    if formula == "divide":
+        calculated = checked[operand_a] / checked[operand_b]
+    elif formula == "multiply":
+        calculated = checked[operand_a] * checked[operand_b]
+    elif formula == "add":
+        calculated = checked[operand_a] + checked[operand_b]
+    else:  # subtract
+        calculated = checked[operand_a] - checked[operand_b]
+
+    diff = (calculated - checked[target]).abs()
+    error_idx = diff[diff > tolerance].index
+    cells_fixed = len(error_idx)
+
+    if cells_fixed > 0:
+        result = calculated[error_idx]
+        if pd.api.types.is_integer_dtype(df[target].dtype):
+            result = result.round().astype("Int64")
+        df.loc[error_idx, target] = result
+
+    return df, cells_fixed
+
+
 def describe_dataframe(df):
     described = df.describe(include='all')
     result = {}

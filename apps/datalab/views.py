@@ -19,8 +19,12 @@ from apps.core.data_engine import (
     drop_nulls as df_drop_nulls,
     fill_nulls as df_fill_nulls,
     describe_dataframe,
+    fill_derived as df_fill_derived,
+    validate_formula as df_validate_formula,
+    fix_formula_errors as df_fix_formula_errors,
     FILL_STRATEGIES,
     SUPPORTED_CASTS,
+    SUPPORTED_FORMULAS,
 )
 
 logger = logging.getLogger(__name__)
@@ -574,6 +578,218 @@ class DatalabViewSet(viewsets.ViewSet):
             df = apply_stored_casts(df, dataset.column_casts)
 
         return Response({"columns": describe_dataframe(df)})
+
+    def fill_derived(self, request, dataset_id=None):
+        """POST /datalab/fill-derived/{dataset_id}/"""
+        target = request.data.get("target", "").strip()
+        formula = request.data.get("formula", "").strip()
+        operand_a = request.data.get("operand_a", "").strip()
+        operand_b = request.data.get("operand_b", "").strip()
+
+        if not all([target, formula, operand_a, operand_b]):
+            return Response(
+                {"detail": "'target', 'formula', 'operand_a', and 'operand_b' are all required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if formula not in SUPPORTED_FORMULAS:
+            return Response(
+                {"detail": f"Invalid 'formula'. Choose one of: {list(SUPPORTED_FORMULAS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        missing = [c for c in [target, operand_a, operand_b] if c not in df.columns]
+        if missing:
+            return Response(
+                {"detail": f"Columns not found in dataset: {missing}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        non_numeric = [c for c in [operand_a, operand_b] if not pd.api.types.is_numeric_dtype(df[c])]
+        if non_numeric:
+            return Response(
+                {"detail": f"Operand columns must be numeric: {non_numeric}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        df, cells_filled = df_fill_derived(df, target, formula, operand_a, operand_b)
+
+        if cells_filled == 0:
+            return Response({
+                "target": target,
+                "formula": formula,
+                "operand_a": operand_a,
+                "operand_b": operand_b,
+                "cells_filled": 0,
+                "detail": f"No null values in '{target}' with complete operand data.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        return Response({
+            "target": target,
+            "formula": formula,
+            "operand_a": operand_a,
+            "operand_b": operand_b,
+            "cells_filled": cells_filled,
+        })
+
+    def validate_formula(self, request, dataset_id=None):
+        """POST /datalab/validate-formula/{dataset_id}/"""
+        result_column = request.data.get("result_column", "").strip()
+        formula = request.data.get("formula", "").strip()
+        operand_a = request.data.get("operand_a", "").strip()
+        operand_b = request.data.get("operand_b", "").strip()
+        tolerance = request.data.get("tolerance", 0.01)
+
+        if not all([result_column, formula, operand_a, operand_b]):
+            return Response(
+                {"detail": "'result_column', 'formula', 'operand_a', and 'operand_b' are all required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if formula not in SUPPORTED_FORMULAS:
+            return Response(
+                {"detail": f"Invalid 'formula'. Choose one of: {list(SUPPORTED_FORMULAS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            tolerance = float(tolerance)
+            if tolerance < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "'tolerance' must be a non-negative number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        missing = [c for c in [result_column, operand_a, operand_b] if c not in df.columns]
+        if missing:
+            return Response(
+                {"detail": f"Columns not found in dataset: {missing}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        non_numeric = [c for c in [result_column, operand_a, operand_b] if not pd.api.types.is_numeric_dtype(df[c])]
+        if non_numeric:
+            return Response(
+                {"detail": f"All three columns must be numeric: {non_numeric}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = df_validate_formula(df, result_column, formula, operand_a, operand_b, tolerance)
+        return Response({
+            "result_column": result_column,
+            "formula": formula,
+            "operand_a": operand_a,
+            "operand_b": operand_b,
+            **result,
+        })
+
+    def fix_formula(self, request, dataset_id=None):
+        """POST /datalab/fix-formula/{dataset_id}/"""
+        target = request.data.get("target", "").strip()
+        formula = request.data.get("formula", "").strip()
+        operand_a = request.data.get("operand_a", "").strip()
+        operand_b = request.data.get("operand_b", "").strip()
+        tolerance = request.data.get("tolerance", 0.01)
+
+        if not all([target, formula, operand_a, operand_b]):
+            return Response(
+                {"detail": "'target', 'formula', 'operand_a', and 'operand_b' are all required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if formula not in SUPPORTED_FORMULAS:
+            return Response(
+                {"detail": f"Invalid 'formula'. Choose one of: {list(SUPPORTED_FORMULAS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            tolerance = float(tolerance)
+            if tolerance < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "'tolerance' must be a non-negative number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        missing = [c for c in [target, operand_a, operand_b] if c not in df.columns]
+        if missing:
+            return Response(
+                {"detail": f"Columns not found in dataset: {missing}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        non_numeric = [c for c in [target, operand_a, operand_b] if not pd.api.types.is_numeric_dtype(df[c])]
+        if non_numeric:
+            return Response(
+                {"detail": f"All three columns must be numeric: {non_numeric}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        df, cells_fixed = df_fix_formula_errors(df, target, formula, operand_a, operand_b, tolerance)
+
+        if cells_fixed == 0:
+            return Response({
+                "target": target,
+                "formula": formula,
+                "operand_a": operand_a,
+                "operand_b": operand_b,
+                "tolerance": tolerance,
+                "cells_fixed": 0,
+                "detail": "No inconsistent rows found within the given tolerance.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        return Response({
+            "target": target,
+            "formula": formula,
+            "operand_a": operand_a,
+            "operand_b": operand_b,
+            "tolerance": tolerance,
+            "cells_fixed": cells_fixed,
+        })
 
     def fill_nulls(self, request, dataset_id=None):
         """POST /datalab/fill-nulls/{dataset_id}/"""
