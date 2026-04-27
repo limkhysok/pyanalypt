@@ -761,7 +761,7 @@ Retrieve a stream of activities performed on datasets. Logged actions: `UPLOAD`,
 
 ## 🧪 Datalab
 
-The Datalab provides **dataset inspection** — view the raw data as a table and check structural metadata per column (dtype, null counts, null percentage, memory usage).
+The Datalab is the **data wrangling layer** — inspect, clean, transform, and audit datasets before analysis. It covers the full preparation pipeline: preview, inspect, type casting, null handling, deduplication, formula validation, and outlier treatment.
 
 All endpoints below are under `/api/v1/datalab/`.
 
@@ -780,6 +780,11 @@ All endpoints below are under `/api/v1/datalab/`.
 | 11 | `POST` | `/datalab/replace-values/{dataset_id}/` | Replace sentinel/garbage values with NaN or another value |
 | 12 | `POST` | `/datalab/drop-nulls/{dataset_id}/` | Drop rows or columns containing null values |
 | 13 | `POST` | `/datalab/fill-nulls/{dataset_id}/` | Fill null values using a chosen imputation strategy |
+| 14 | `GET` | `/datalab/detect-outliers/{dataset_id}/` | Detect outliers per column using IQR or Z-Score — read-only audit |
+| 15 | `POST` | `/datalab/trim-outliers/{dataset_id}/` | Delete rows where any target column has an outlier value |
+| 16 | `POST` | `/datalab/impute-outliers/{dataset_id}/` | Replace outlier values with column mean, median, or mode |
+| 17 | `POST` | `/datalab/cap-outliers/{dataset_id}/` | Winsorize — cap values at lower/upper percentile bounds |
+| 18 | `POST` | `/datalab/transform-column/{dataset_id}/` | Apply log, sqrt, or cbrt transformation to numeric columns |
 
 ---
 
@@ -1677,6 +1682,374 @@ Fill missing (NaN) values using a chosen imputation strategy. Apply to all colum
 > Recommended order: `replace_values` → `drop_nulls` → `fill_nulls`.
 > Run `replace_values` first so sentinel strings (`"N/A"`, `"-"`) become real NaN before fill strategies are applied.
 > When nulls are filled, `dataset.file_size` is updated automatically to reflect the new file.
+
+---
+
+### 14. Detect Outliers
+
+Scan one or more numeric columns for outliers using IQR or Z-Score and return per-column stats with sample rows. **Read-only — does not modify the dataset.**
+
+- **Endpoint**: `GET /datalab/detect-outliers/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Query Parameters
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `columns` | string | — | **Required.** Comma-separated list of numeric column names to inspect |
+| `method` | string | `"iqr"` | Detection method: `"iqr"` or `"zscore"` |
+| `threshold` | number | `1.5` (IQR) / `3.0` (Z-Score) | Sensitivity. Lower = more outliers flagged |
+
+**Method reference:**
+
+| Method | How it works | Threshold meaning |
+|---|---|---|
+| `iqr` | Outlier if value < Q1 − t×IQR or > Q3 + t×IQR | Multiplier on IQR. `1.5` = standard; `3.0` = only extreme outliers |
+| `zscore` | Outlier if \|z-score\| > threshold | Standard deviations from mean. `3.0` = standard; `2.0` = stricter |
+
+**Detect outliers in `unit_price` and `quantity` using IQR:**
+```
+GET /datalab/detect-outliers/15/?columns=unit_price,quantity&method=iqr&threshold=1.5
+```
+
+**Detect using Z-Score with strict threshold:**
+```
+GET /datalab/detect-outliers/15/?columns=salary&method=zscore&threshold=2.5
+```
+
+#### Response (200 OK)
+```json
+{
+  "dataset_id": 15,
+  "method": "iqr",
+  "threshold": 1.5,
+  "columns": {
+    "unit_price": {
+      "outlier_count": 8,
+      "outlier_pct": 0.8,
+      "lower_bound": 2.125,
+      "upper_bound": 49.875,
+      "min": -5.0,
+      "max": 210.0,
+      "mean": 24.3,
+      "median": 22.5,
+      "sample_outliers": [
+        { "row_index": 12, "unit_price": -5.0 },
+        { "row_index": 47, "unit_price": 210.0 }
+      ]
+    },
+    "quantity": {
+      "outlier_count": 3,
+      "outlier_pct": 0.3,
+      "lower_bound": 0.0,
+      "upper_bound": 18.0,
+      "min": 1,
+      "max": 500,
+      "mean": 8.7,
+      "median": 7.0,
+      "sample_outliers": [
+        { "row_index": 201, "quantity": 500 }
+      ]
+    }
+  }
+}
+```
+
+- **Response (400)** — missing columns:
+```json
+{ "detail": "'columns' is required." }
+```
+- **Response (400)** — non-numeric column:
+```json
+{ "detail": "Outlier operations require numeric columns: ['product_name']" }
+```
+- **Response (400)** — invalid method:
+```json
+{ "detail": "'method' must be one of: ['iqr', 'zscore']" }
+```
+
+> `lower_bound` / `upper_bound` — the computed fence values. Values outside this range are flagged as outliers.
+> `sample_outliers` — up to 5 example rows. Use `row_index` to locate them in the preview table.
+> This endpoint is safe to call freely — it never writes to disk.
+
+---
+
+### 15. Trim Outliers (Deletion)
+
+Delete rows where any of the target columns contains an outlier. Use this when you are certain the values are measurement errors and the affected rows are a small fraction of your data.
+
+- **Endpoint**: `POST /datalab/trim-outliers/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `columns` | array of strings | Yes | — | Numeric columns to check for outliers |
+| `method` | string | No | `"iqr"` | `"iqr"` or `"zscore"` |
+| `threshold` | number | No | `1.5` | Detection sensitivity (see Detect Outliers) |
+
+```json
+{
+  "columns": ["unit_price", "quantity"],
+  "method": "iqr",
+  "threshold": 1.5
+}
+```
+
+#### Responses
+
+- **Response (200)** — rows deleted:
+```json
+{
+  "columns": ["unit_price", "quantity"],
+  "method": "iqr",
+  "threshold": 1.5,
+  "rows_before": 1000,
+  "rows_after": 991,
+  "rows_dropped": 9
+}
+```
+
+- **Response (200)** — no outliers found (no file write occurs):
+```json
+{
+  "columns": ["unit_price"],
+  "method": "iqr",
+  "threshold": 1.5,
+  "rows_before": 1000,
+  "rows_after": 1000,
+  "rows_dropped": 0,
+  "detail": "No outlier rows found."
+}
+```
+
+> A row is dropped if **any** of the listed columns is an outlier for that row.
+> Run `detect-outliers` first to preview how many rows will be removed before committing.
+> Risk: information is permanently lost if the outlier was a real, rare event — use `impute-outliers` or `cap-outliers` instead when in doubt.
+
+---
+
+### 16. Impute Outliers (Replacement)
+
+Replace outlier values in-place with the column's mean, median, or mode. The row is kept — only the offending value is replaced. Use this when you want to preserve the row but the specific value is clearly wrong.
+
+- **Endpoint**: `POST /datalab/impute-outliers/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `columns` | array of strings | Yes | — | Numeric columns to impute |
+| `method` | string | No | `"iqr"` | `"iqr"` or `"zscore"` |
+| `threshold` | number | No | `1.5` | Detection sensitivity |
+| `strategy` | string | No | `"median"` | Replacement value: `"mean"`, `"median"`, or `"mode"` |
+
+**Replace negative prices with the column median:**
+```json
+{
+  "columns": ["unit_price"],
+  "method": "iqr",
+  "threshold": 1.5,
+  "strategy": "median"
+}
+```
+
+**Replace extreme salary values with the mean:**
+```json
+{
+  "columns": ["salary"],
+  "method": "zscore",
+  "threshold": 3.0,
+  "strategy": "mean"
+}
+```
+
+#### Responses
+
+- **Response (200)** — outliers replaced:
+```json
+{
+  "columns": ["unit_price"],
+  "method": "iqr",
+  "threshold": 1.5,
+  "strategy": "median",
+  "cells_imputed": 8
+}
+```
+
+- **Response (200)** — no outliers found (no file write occurs):
+```json
+{
+  "columns": ["unit_price"],
+  "method": "iqr",
+  "threshold": 1.5,
+  "strategy": "median",
+  "cells_imputed": 0,
+  "detail": "No outliers found."
+}
+```
+
+- **Response (400)** — invalid strategy:
+```json
+{ "detail": "'strategy' must be one of: ['mean', 'median', 'mode']" }
+```
+
+> `median` is the recommended default — it is robust to the very outliers being replaced, unlike `mean` which can itself be pulled by extreme values.
+> Integer-typed columns are auto-rounded after imputation.
+> The replacement value is computed from all non-null values in the column, including non-outlier rows.
+
+---
+
+### 17. Cap Outliers / Winsorization
+
+Instead of deleting or replacing, cap extreme values at a chosen percentile boundary. Values below the lower percentile are set to that percentile's value; values above the upper percentile are set to the upper percentile's value. This keeps the data distribution meaningful without letting extremes distort aggregates.
+
+- **Endpoint**: `POST /datalab/cap-outliers/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `columns` | array of strings | Yes | — | Numeric columns to winsorize |
+| `lower_pct` | number (0–100) | No | `5.0` | Lower percentile floor (e.g. `5` = 5th percentile) |
+| `upper_pct` | number (0–100) | No | `95.0` | Upper percentile ceiling (e.g. `95` = 95th percentile) |
+
+**Cap at 5th / 95th percentile (standard winsorization):**
+```json
+{
+  "columns": ["unit_price", "salary"],
+  "lower_pct": 5,
+  "upper_pct": 95
+}
+```
+
+**Tighter cap — only the top and bottom 1%:**
+```json
+{
+  "columns": ["transaction_amount"],
+  "lower_pct": 1,
+  "upper_pct": 99
+}
+```
+
+#### Responses
+
+- **Response (200)** — values capped:
+```json
+{
+  "columns": ["unit_price", "salary"],
+  "lower_pct": 5.0,
+  "upper_pct": 95.0,
+  "cells_capped": 42
+}
+```
+
+- **Response (200)** — all values already within bounds (no file write occurs):
+```json
+{
+  "columns": ["unit_price"],
+  "lower_pct": 5.0,
+  "upper_pct": 95.0,
+  "cells_capped": 0,
+  "detail": "No values outside the percentile bounds."
+}
+```
+
+- **Response (400)** — invalid percentile range:
+```json
+{ "detail": "'lower_pct' and 'upper_pct' must be numbers where 0 <= lower_pct < upper_pct <= 100." }
+```
+
+> Unlike trimming, no rows are deleted — the shape of the dataset is preserved.
+> `cells_capped` is the total count across all columns — values that were already exactly at the boundary are not counted.
+> After capping, run `describe` to confirm the new min/max values look correct.
+
+---
+
+### 18. Transform Column
+
+Apply a mathematical transformation to one or more numeric columns. Useful for right-skewed data (many small values, a few very large ones) — a log transform pulls the distribution closer to normal and reduces the influence of extreme values.
+
+- **Endpoint**: `POST /datalab/transform-column/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `columns` | array of strings | Yes | — | Numeric columns to transform |
+| `function` | string | No | `"log"` | Transformation to apply: `"log"`, `"sqrt"`, or `"cbrt"` |
+
+**Function reference:**
+
+| Function | Formula | Requirement | Use when |
+|---|---|---|---|
+| `log` | `ln(x)` | All values must be **> 0** | Right-skewed data (sales, income, counts) |
+| `sqrt` | `√x` | All values must be **≥ 0** | Moderate skew; count data |
+| `cbrt` | `∛x` | No restriction — works with negatives | When `log` / `sqrt` won't apply due to zeros or negatives |
+
+**Log-transform sales and revenue (right-skewed):**
+```json
+{
+  "columns": ["sales_amount", "revenue"],
+  "function": "log"
+}
+```
+
+**Square-root transform count columns:**
+```json
+{
+  "columns": ["page_views", "click_count"],
+  "function": "sqrt"
+}
+```
+
+#### Responses
+
+- **Response (200)** — columns transformed:
+```json
+{
+  "function": "log",
+  "transformed_columns": ["sales_amount", "revenue"],
+  "skipped_columns": []
+}
+```
+
+- **Response (200)** — some columns skipped due to invalid values:
+```json
+{
+  "function": "log",
+  "transformed_columns": ["revenue"],
+  "skipped_columns": [
+    { "column": "sales_amount", "reason": "log requires all values > 0" }
+  ]
+}
+```
+
+- **Response (200)** — all columns skipped (no file write occurs):
+```json
+{
+  "function": "log",
+  "transformed_columns": [],
+  "skipped_columns": [
+    { "column": "sales_amount", "reason": "log requires all values > 0" }
+  ],
+  "detail": "No columns were transformed."
+}
+```
+
+- **Response (400)** — invalid function:
+```json
+{ "detail": "'function' must be one of: ['log', 'sqrt', 'cbrt']" }
+```
+
+> Transformation is applied to the entire column including non-outlier values — this is a column-wide reshape, not an outlier fix.
+> Columns with any value that violates the function's constraint are skipped entirely (not partially transformed) and reported in `skipped_columns`.
+> After transforming, run `describe` to verify the new distribution looks as expected.
+> **This operation is irreversible** — duplicate the dataset first if you need to compare before/after.
 
 ---
 

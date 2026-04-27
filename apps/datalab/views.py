@@ -22,15 +22,24 @@ from apps.core.data_engine import (
     fill_derived as df_fill_derived,
     validate_formula as df_validate_formula,
     fix_formula_errors as df_fix_formula_errors,
+    detect_outliers as df_detect_outliers,
+    trim_outliers as df_trim_outliers,
+    impute_outliers as df_impute_outliers,
+    cap_outliers as df_cap_outliers,
+    transform_column as df_transform_column,
     FILL_STRATEGIES,
     SUPPORTED_CASTS,
     SUPPORTED_FORMULAS,
+    OUTLIER_METHODS,
+    OUTLIER_IMPUTE_STRATEGIES,
+    COLUMN_TRANSFORMS,
 )
 
 logger = logging.getLogger(__name__)
 
 _UNSUPPORTED_FORMAT = "Unsupported file format."
 _SAVE_FAILED = "Failed to save updated dataset."
+_INVALID_THRESHOLD = "'threshold' must be a positive number."
 
 
 def _validate_casts(df, casts):
@@ -109,6 +118,46 @@ def _apply_dedup(df, mode, subset, keep):
     if mode == "subset_keep":
         return df.drop_duplicates(subset=subset, keep=keep)
     return df.drop_duplicates(subset=subset, keep=False)  # drop_all
+
+
+def _parse_outlier_columns(source, df):
+    """
+    Parse and validate the 'columns' param for outlier/transform endpoints.
+    source: list from request.data, or comma-separated string from query_params.
+    Returns (columns_list, error_response_or_None).
+    """
+    if not source:
+        return None, Response(
+            {"detail": "'columns' is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if isinstance(source, str):
+        columns = [c.strip() for c in source.split(",") if c.strip()]
+    elif isinstance(source, list):
+        columns = source
+    else:
+        return None, Response(
+            {"detail": "'columns' must be a list or comma-separated string."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not columns:
+        return None, Response(
+            {"detail": "'columns' must not be empty."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    unknown = [c for c in columns if c not in df.columns]
+    if unknown:
+        return None, Response(
+            {"detail": f"Columns not found in dataset: {unknown}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    non_numeric = [c for c in columns if not pd.api.types.is_numeric_dtype(df[c])]
+    if non_numeric:
+        return None, Response(
+            {"detail": f"Outlier operations require numeric columns: {non_numeric}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return columns, None
 
 
 def _validate_drop_nulls_params(axis, how, thresh_pct):
@@ -844,4 +893,269 @@ class DatalabViewSet(viewsets.ViewSet):
             "strategy": strategy,
             "cells_filled": cells_filled,
             "skipped_columns": skipped_columns,
+        })
+
+    def detect_outliers(self, request, dataset_id=None):
+        """GET /datalab/detect-outliers/{dataset_id}/"""
+        method = request.query_params.get("method", "iqr")
+        threshold_raw = request.query_params.get("threshold", "1.5" if method == "iqr" else "3.0")
+        columns_raw = request.query_params.get("columns", "")
+
+        if method not in OUTLIER_METHODS:
+            return Response(
+                {"detail": f"'method' must be one of: {list(OUTLIER_METHODS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            threshold = float(threshold_raw)
+            if threshold <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": _INVALID_THRESHOLD},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        columns, err = _parse_outlier_columns(columns_raw, df)
+        if err:
+            return err
+
+        result = df_detect_outliers(df, columns, method=method, threshold=threshold)
+        return Response({
+            "dataset_id": dataset_id,
+            "method": method,
+            "threshold": threshold,
+            "columns": result,
+        })
+
+    def trim_outliers(self, request, dataset_id=None):
+        """POST /datalab/trim-outliers/{dataset_id}/"""
+        columns_raw = request.data.get("columns")
+        method = request.data.get("method", "iqr")
+        threshold_raw = request.data.get("threshold", 1.5)
+
+        if method not in OUTLIER_METHODS:
+            return Response(
+                {"detail": f"'method' must be one of: {list(OUTLIER_METHODS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            threshold = float(threshold_raw)
+            if threshold <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": _INVALID_THRESHOLD},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        columns, err = _parse_outlier_columns(columns_raw, df)
+        if err:
+            return err
+
+        rows_before = len(df)
+        df, rows_dropped = df_trim_outliers(df, columns, method=method, threshold=threshold)
+
+        if rows_dropped == 0:
+            return Response({
+                "columns": columns,
+                "method": method,
+                "threshold": threshold,
+                "rows_before": rows_before,
+                "rows_after": rows_before,
+                "rows_dropped": 0,
+                "detail": "No outlier rows found.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        return Response({
+            "columns": columns,
+            "method": method,
+            "threshold": threshold,
+            "rows_before": rows_before,
+            "rows_after": len(df),
+            "rows_dropped": rows_dropped,
+        })
+
+    def impute_outliers(self, request, dataset_id=None):
+        """POST /datalab/impute-outliers/{dataset_id}/"""
+        columns_raw = request.data.get("columns")
+        method = request.data.get("method", "iqr")
+        threshold_raw = request.data.get("threshold", 1.5)
+        strategy = request.data.get("strategy", "median")
+
+        if method not in OUTLIER_METHODS:
+            return Response(
+                {"detail": f"'method' must be one of: {list(OUTLIER_METHODS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if strategy not in OUTLIER_IMPUTE_STRATEGIES:
+            return Response(
+                {"detail": f"'strategy' must be one of: {list(OUTLIER_IMPUTE_STRATEGIES)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            threshold = float(threshold_raw)
+            if threshold <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": _INVALID_THRESHOLD},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        columns, err = _parse_outlier_columns(columns_raw, df)
+        if err:
+            return err
+
+        df, cells_imputed = df_impute_outliers(df, columns, method=method, threshold=threshold, strategy=strategy)
+
+        if cells_imputed == 0:
+            return Response({
+                "columns": columns,
+                "method": method,
+                "threshold": threshold,
+                "strategy": strategy,
+                "cells_imputed": 0,
+                "detail": "No outliers found.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        return Response({
+            "columns": columns,
+            "method": method,
+            "threshold": threshold,
+            "strategy": strategy,
+            "cells_imputed": cells_imputed,
+        })
+
+    def cap_outliers(self, request, dataset_id=None):
+        """POST /datalab/cap-outliers/{dataset_id}/"""
+        columns_raw = request.data.get("columns")
+        lower_pct_raw = request.data.get("lower_pct", 5.0)
+        upper_pct_raw = request.data.get("upper_pct", 95.0)
+
+        try:
+            lower_pct = float(lower_pct_raw)
+            upper_pct = float(upper_pct_raw)
+            if not (0 <= lower_pct < upper_pct <= 100):
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "'lower_pct' and 'upper_pct' must be numbers where 0 <= lower_pct < upper_pct <= 100."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        columns, err = _parse_outlier_columns(columns_raw, df)
+        if err:
+            return err
+
+        df, cells_capped = df_cap_outliers(df, columns, lower_pct=lower_pct, upper_pct=upper_pct)
+
+        if cells_capped == 0:
+            return Response({
+                "columns": columns,
+                "lower_pct": lower_pct,
+                "upper_pct": upper_pct,
+                "cells_capped": 0,
+                "detail": "No values outside the percentile bounds.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        return Response({
+            "columns": columns,
+            "lower_pct": lower_pct,
+            "upper_pct": upper_pct,
+            "cells_capped": cells_capped,
+        })
+
+    def transform_column(self, request, dataset_id=None):
+        """POST /datalab/transform-column/{dataset_id}/"""
+        columns_raw = request.data.get("columns")
+        function = request.data.get("function", "log")
+
+        if function not in COLUMN_TRANSFORMS:
+            return Response(
+                {"detail": f"'function' must be one of: {list(COLUMN_TRANSFORMS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        columns, err = _parse_outlier_columns(columns_raw, df)
+        if err:
+            return err
+
+        df, transformed, skipped = df_transform_column(df, columns, function=function)
+
+        if not transformed:
+            return Response({
+                "function": function,
+                "transformed_columns": [],
+                "skipped_columns": skipped,
+                "detail": "No columns were transformed.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        return Response({
+            "function": function,
+            "transformed_columns": transformed,
+            "skipped_columns": skipped,
         })

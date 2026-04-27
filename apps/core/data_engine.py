@@ -481,6 +481,178 @@ def describe_dataframe(df):
     return result
 
 
+OUTLIER_METHODS = ("iqr", "zscore")
+OUTLIER_IMPUTE_STRATEGIES = ("mean", "median", "mode")
+COLUMN_TRANSFORMS = ("log", "sqrt", "cbrt")
+
+
+def _outlier_bounds(series, method, threshold):
+    """
+    Compute (lower, upper) bounds and a boolean outlier mask for a non-null Series.
+    series must already have NaN dropped (use df[col].dropna() before calling).
+    """
+    if method == "iqr":
+        q1 = series.quantile(0.25)
+        q3 = series.quantile(0.75)
+        iqr_val = q3 - q1
+        lower = float(q1 - threshold * iqr_val)
+        upper = float(q3 + threshold * iqr_val)
+        return (series < lower) | (series > upper), lower, upper
+    # zscore
+    mean = float(series.mean())
+    std = float(series.std())
+    if std == 0:
+        return pd.Series(False, index=series.index), mean, mean
+    z = (series - mean) / std
+    return z.abs() > threshold, mean - threshold * std, mean + threshold * std
+
+
+def detect_outliers(df, columns, method="iqr", threshold=1.5):
+    """
+    Return per-column outlier stats and up to 5 sample rows. Read-only.
+    """
+    total_rows = len(df)
+    result = {}
+    for col in columns:
+        valid = df[col].dropna()
+        if valid.empty:
+            result[col] = {
+                "outlier_count": 0, "outlier_pct": 0.0,
+                "lower_bound": None, "upper_bound": None,
+                "sample_outliers": [],
+            }
+            continue
+        mask, lower, upper = _outlier_bounds(valid, method, threshold)
+        full_mask = pd.Series(False, index=df.index)
+        full_mask[valid.index] = mask.values
+        count = int(full_mask.sum())
+        sample_rows = []
+        for idx in full_mask[full_mask].head(5).index:
+            val = df.at[idx, col]
+            sample_rows.append({
+                "row_index": int(idx),
+                col: val.item() if hasattr(val, "item") else val,
+            })
+        result[col] = {
+            "outlier_count": count,
+            "outlier_pct": round(count / total_rows * 100, 1) if total_rows else 0.0,
+            "lower_bound": round(lower, 4),
+            "upper_bound": round(upper, 4),
+            "min": round(float(valid.min()), 4),
+            "max": round(float(valid.max()), 4),
+            "mean": round(float(valid.mean()), 4),
+            "median": round(float(valid.median()), 4),
+            "sample_outliers": sample_rows,
+        }
+    return result
+
+
+def trim_outliers(df, columns, method="iqr", threshold=1.5):
+    """
+    Drop rows where any of the given columns has an outlier value.
+    Returns (df, rows_dropped).
+    """
+    drop_mask = pd.Series(False, index=df.index)
+    for col in columns:
+        valid = df[col].dropna()
+        if valid.empty:
+            continue
+        mask, _, _ = _outlier_bounds(valid, method, threshold)
+        full_mask = pd.Series(False, index=df.index)
+        full_mask[valid.index] = mask.values
+        drop_mask |= full_mask
+    rows_before = len(df)
+    df = df[~drop_mask]
+    return df, rows_before - len(df)
+
+
+def impute_outliers(df, columns, method="iqr", threshold=1.5, strategy="median"):
+    """
+    Replace outlier values in each column with mean, median, or mode.
+    Returns (df, cells_imputed).
+    """
+    cells_imputed = 0
+    for col in columns:
+        valid = df[col].dropna()
+        if valid.empty:
+            continue
+        mask, _, _ = _outlier_bounds(valid, method, threshold)
+        full_mask = pd.Series(False, index=df.index)
+        full_mask[valid.index] = mask.values
+        count = int(full_mask.sum())
+        if count == 0:
+            continue
+        if strategy == "mean":
+            fill_val = valid.mean()
+        elif strategy == "median":
+            fill_val = valid.median()
+        else:  # mode
+            mode_vals = valid.mode()
+            if mode_vals.empty:
+                continue
+            fill_val = mode_vals.iloc[0]
+        if pd.api.types.is_integer_dtype(df[col].dtype):
+            fill_val = round(float(fill_val))
+        df.loc[full_mask, col] = fill_val
+        cells_imputed += count
+    return df, cells_imputed
+
+
+def cap_outliers(df, columns, lower_pct=5.0, upper_pct=95.0):
+    """
+    Winsorize: values below lower_pct percentile are set to that percentile;
+    values above upper_pct percentile are set to that percentile.
+    Returns (df, cells_capped).
+    """
+    cells_capped = 0
+    for col in columns:
+        valid = df[col].dropna()
+        if valid.empty:
+            continue
+        lower = float(valid.quantile(lower_pct / 100))
+        upper = float(valid.quantile(upper_pct / 100))
+        below = df[col].notna() & (df[col] < lower)
+        above = df[col].notna() & (df[col] > upper)
+        count = int(below.sum()) + int(above.sum())
+        if count == 0:
+            continue
+        df.loc[below, col] = lower
+        df.loc[above, col] = upper
+        cells_capped += count
+    return df, cells_capped
+
+
+def transform_column(df, columns, function="log"):
+    """
+    Apply a mathematical transformation to numeric columns.
+    log: natural log (values must be > 0)
+    sqrt: square root (values must be >= 0)
+    cbrt: cube root (works with negative values)
+    Returns (df, transformed_columns, skipped_columns).
+    """
+    transformed = []
+    skipped = []
+    for col in columns:
+        valid = df[col].dropna()
+        if valid.empty:
+            skipped.append({"column": col, "reason": "no non-null values"})
+            continue
+        if function == "log":
+            if (valid <= 0).any():
+                skipped.append({"column": col, "reason": "log requires all values > 0"})
+                continue
+            df[col] = np.log(df[col])
+        elif function == "sqrt":
+            if (valid < 0).any():
+                skipped.append({"column": col, "reason": "sqrt requires all values >= 0"})
+                continue
+            df[col] = np.sqrt(df[col])
+        else:  # cbrt
+            df[col] = np.cbrt(df[col])
+        transformed.append(col)
+    return df, transformed, skipped
+
+
 def generate_summary_stats(df):
     """
     Per-column summary statistics suitable for JSON serialization.

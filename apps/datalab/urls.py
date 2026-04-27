@@ -14,6 +14,11 @@ rename_column = DatalabViewSet.as_view({"post": "rename_column"})
 replace_values = DatalabViewSet.as_view({"post": "replace_values"})
 drop_nulls = DatalabViewSet.as_view({"post": "drop_nulls"})
 fill_nulls = DatalabViewSet.as_view({"post": "fill_nulls"})
+detect_outliers = DatalabViewSet.as_view({"get": "detect_outliers"})
+trim_outliers = DatalabViewSet.as_view({"post": "trim_outliers"})
+impute_outliers = DatalabViewSet.as_view({"post": "impute_outliers"})
+cap_outliers = DatalabViewSet.as_view({"post": "cap_outliers"})
+transform_column = DatalabViewSet.as_view({"post": "transform_column"})
 
 urlpatterns = [
     path("preview/<int:dataset_id>/", preview, name="datalab-preview"),
@@ -29,4 +34,9 @@ urlpatterns = [
     path("replace-values/<int:dataset_id>/", replace_values, name="datalab-replace-values"),
     path("drop-nulls/<int:dataset_id>/", drop_nulls, name="datalab-drop-nulls"),
     path("fill-nulls/<int:dataset_id>/", fill_nulls, name="datalab-fill-nulls"),
+    path("detect-outliers/<int:dataset_id>/", detect_outliers, name="datalab-detect-outliers"),
+    path("trim-outliers/<int:dataset_id>/", trim_outliers, name="datalab-trim-outliers"),
+    path("impute-outliers/<int:dataset_id>/", impute_outliers, name="datalab-impute-outliers"),
+    path("cap-outliers/<int:dataset_id>/", cap_outliers, name="datalab-cap-outliers"),
+    path("transform-column/<int:dataset_id>/", transform_column, name="datalab-transform-column"),
 ]
