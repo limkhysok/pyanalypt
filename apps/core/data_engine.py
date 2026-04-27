@@ -1,4 +1,4 @@
-import pickle
+import io
 import logging
 
 import numpy as np
@@ -23,14 +23,16 @@ def get_cached_dataframe(dataset_id, file_path, file_format):
     blob = cache.get(key)
     if blob is not None:
         try:
-            return pickle.loads(blob)
+            return pd.read_parquet(io.BytesIO(blob))
         except Exception:
             logger.warning("df cache deserialize failed for dataset %s — reloading", dataset_id)
 
     df = load_dataframe(file_path, file_format)
     if df is not None:
         try:
-            cache.set(key, pickle.dumps(df), timeout=settings.DATAFRAME_CACHE_TTL)
+            buf = io.BytesIO()
+            df.to_parquet(buf, index=True)
+            cache.set(key, buf.getvalue(), timeout=settings.DATAFRAME_CACHE_TTL)
         except Exception:
             logger.warning("df cache set failed for dataset %s — serving uncached", dataset_id)
     return df
@@ -80,10 +82,18 @@ def validate_cast(series, target):
     """
     if target == "integer" and pd.api.types.is_float_dtype(series):
         if (series.dropna() % 1 != 0).any():
-                return (
-                    "warning",
-                    "Column contains decimal values that will be truncated during conversion.",
-                )
+            return (
+                "warning",
+                "Column contains decimal values that will be truncated during conversion.",
+            )
+
+    if target == "string":
+        null_count = int(series.isna().sum())
+        if null_count > 0:
+            return (
+                "warning",
+                f"{null_count} null value(s) will become the literal string 'nan'.",
+            )
 
     if target == "boolean":
         # Check if values are logically boolean (0/1, True/False, or strings thereof)

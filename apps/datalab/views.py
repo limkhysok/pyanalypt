@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 _UNSUPPORTED_FORMAT = "Unsupported file format."
 _SAVE_FAILED = "Failed to save updated dataset."
 _INVALID_THRESHOLD = "'threshold' must be a positive number."
+_MAX_PREVIEW_LIMIT = 10_000
 
 
 def _validate_casts(df, casts):
@@ -120,7 +121,7 @@ def _apply_dedup(df, mode, subset, keep):
     return df.drop_duplicates(subset=subset, keep=False)  # drop_all
 
 
-def _parse_outlier_columns(source, df):
+def _parse_numeric_columns(source, df):
     """
     Parse and validate the 'columns' param for outlier/transform endpoints.
     source: list from request.data, or comma-separated string from query_params.
@@ -196,7 +197,13 @@ class DatalabViewSet(viewsets.ViewSet):
                 raise ValueError
         except (TypeError, ValueError):
             return Response(
-                {"detail": "'limit' must be a non-negative integer (0 = all rows)."},
+                {"detail": f"'limit' must be a non-negative integer (0 = all rows, max {_MAX_PREVIEW_LIMIT})."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if 0 < limit > _MAX_PREVIEW_LIMIT:
+            return Response(
+                {"detail": f"'limit' cannot exceed {_MAX_PREVIEW_LIMIT}."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -212,7 +219,9 @@ class DatalabViewSet(viewsets.ViewSet):
             df = apply_stored_casts(df, dataset.column_casts)
 
         total_rows = len(df)
-        view_df = df if limit == 0 else df.iloc[:limit]
+        effective_limit = min(limit or total_rows, _MAX_PREVIEW_LIMIT)
+        view_df = df.iloc[:effective_limit]
+        truncated = total_rows > effective_limit
 
         return Response({
             "dataset_id": dataset.id,
@@ -221,7 +230,8 @@ class DatalabViewSet(viewsets.ViewSet):
             "dataset_size": _format_size(dataset.file_size),
             "total_rows": total_rows,
             "total_columns": len(df.columns),
-            "limit": limit,
+            "limit": effective_limit,
+            "truncated": truncated,
             "columns": list(df.columns),
             "rows": view_df.astype(object).where(pd.notna(view_df), None).to_dict(orient="records"),
         })
@@ -252,7 +262,7 @@ class DatalabViewSet(viewsets.ViewSet):
                         "null_count": int(df[col].isna().sum()),
                         "null_pct": round(df[col].isna().sum() / total_rows * 100, 1) if total_rows > 0 else 0.0,
                         "unique_count": int(unique_counts[col]),
-                        "is_unique": bool(unique_counts[col] == total_rows),
+                        "is_unique": bool(unique_counts[col] == int(df[col].notna().sum())),
                     }
                     for col in df.columns
                 ],
@@ -335,7 +345,16 @@ class DatalabViewSet(viewsets.ViewSet):
                 )
             invalidate_dataframe_cache(dataset.id)
             dataset.column_casts = {**dataset.column_casts, **successful}
-            dataset.save(update_fields=["column_casts"])
+            dataset.file_size = dataset.file.size
+            dataset.save(update_fields=["column_casts", "file_size", "updated_date"])
+
+            DatasetActivityLog.objects.create(
+                user=request.user,
+                dataset=dataset,
+                dataset_name_snap=dataset.file_name,
+                action="CAST",
+                details={"columns": successful},
+            )
 
         return Response({"updated_columns": results})
 
@@ -392,6 +411,8 @@ class DatalabViewSet(viewsets.ViewSet):
             )
 
         invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
 
         DatasetActivityLog.objects.create(
             user=request.user,
@@ -451,10 +472,21 @@ class DatalabViewSet(viewsets.ViewSet):
 
         invalidate_dataframe_cache(dataset.id)
 
+        dataset.file_size = dataset.file.size
+        fields_to_update = ["file_size", "updated_date"]
         # Migrate stored cast key so the renamed column keeps its dtype override
         if old_name in dataset.column_casts:
             dataset.column_casts[new_name] = dataset.column_casts.pop(old_name)
-            dataset.save(update_fields=["column_casts"])
+            fields_to_update.append("column_casts")
+        dataset.save(update_fields=fields_to_update)
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="RENAME_COLUMN",
+            details={"old_name": old_name, "new_name": new_name},
+        )
 
         return Response({
             "old_name": old_name,
@@ -513,6 +545,14 @@ class DatalabViewSet(viewsets.ViewSet):
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
 
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="DROP_DUPLICATES",
+            details={"mode": mode, "rows_dropped": rows_dropped},
+        )
+
         return Response({
             "mode": mode,
             "rows_before": rows_before,
@@ -570,6 +610,14 @@ class DatalabViewSet(viewsets.ViewSet):
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
 
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="REPLACE_VALUES",
+            details={"cells_replaced": cells_replaced, "columns": columns},
+        )
+
         return Response({
             "replacements": replacements,
             "columns_affected": columns or list(df.columns),
@@ -602,7 +650,7 @@ class DatalabViewSet(viewsets.ViewSet):
 
         df, stats = df_drop_nulls(df, axis, how=how, subset=subset, thresh_pct=thresh_pct)
 
-        dropped_count = stats.get("rows_dropped", 0) or len(stats.get("columns_dropped", []))
+        dropped_count = stats.get("rows_dropped") or len(stats.get("columns_dropped", []))
         if dropped_count == 0:
             return Response({"axis": axis, **stats, "detail": "No null rows/columns matched the criteria."})
 
@@ -613,6 +661,14 @@ class DatalabViewSet(viewsets.ViewSet):
 
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="DROP_NULLS",
+            details={"axis": axis, **stats},
+        )
 
         return Response({"axis": axis, **stats})
 
@@ -662,10 +718,10 @@ class DatalabViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        non_numeric = [c for c in [operand_a, operand_b] if not pd.api.types.is_numeric_dtype(df[c])]
+        non_numeric = [c for c in [target, operand_a, operand_b] if not pd.api.types.is_numeric_dtype(df[c])]
         if non_numeric:
             return Response(
-                {"detail": f"Operand columns must be numeric: {non_numeric}"},
+                {"detail": f"All three columns must be numeric: {non_numeric}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -688,6 +744,14 @@ class DatalabViewSet(viewsets.ViewSet):
 
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="FILL_DERIVED",
+            details={"target": target, "formula": formula, "cells_filled": cells_filled},
+        )
 
         return Response({
             "target": target,
@@ -831,6 +895,14 @@ class DatalabViewSet(viewsets.ViewSet):
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
 
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="FIX_FORMULA",
+            details={"target": target, "formula": formula, "cells_fixed": cells_fixed},
+        )
+
         return Response({
             "target": target,
             "formula": formula,
@@ -889,6 +961,14 @@ class DatalabViewSet(viewsets.ViewSet):
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
 
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="FILL_NULLS",
+            details={"strategy": strategy, "cells_filled": cells_filled},
+        )
+
         return Response({
             "strategy": strategy,
             "cells_filled": cells_filled,
@@ -923,7 +1003,7 @@ class DatalabViewSet(viewsets.ViewSet):
         if dataset.column_casts:
             df = apply_stored_casts(df, dataset.column_casts)
 
-        columns, err = _parse_outlier_columns(columns_raw, df)
+        columns, err = _parse_numeric_columns(columns_raw, df)
         if err:
             return err
 
@@ -963,7 +1043,7 @@ class DatalabViewSet(viewsets.ViewSet):
         if dataset.column_casts:
             df = apply_stored_casts(df, dataset.column_casts)
 
-        columns, err = _parse_outlier_columns(columns_raw, df)
+        columns, err = _parse_numeric_columns(columns_raw, df)
         if err:
             return err
 
@@ -987,6 +1067,14 @@ class DatalabViewSet(viewsets.ViewSet):
         invalidate_dataframe_cache(dataset.id)
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="TRIM_OUTLIERS",
+            details={"method": method, "threshold": threshold, "rows_dropped": rows_dropped},
+        )
 
         return Response({
             "columns": columns,
@@ -1031,7 +1119,7 @@ class DatalabViewSet(viewsets.ViewSet):
         if dataset.column_casts:
             df = apply_stored_casts(df, dataset.column_casts)
 
-        columns, err = _parse_outlier_columns(columns_raw, df)
+        columns, err = _parse_numeric_columns(columns_raw, df)
         if err:
             return err
 
@@ -1053,6 +1141,14 @@ class DatalabViewSet(viewsets.ViewSet):
         invalidate_dataframe_cache(dataset.id)
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="IMPUTE_OUTLIERS",
+            details={"method": method, "strategy": strategy, "cells_imputed": cells_imputed},
+        )
 
         return Response({
             "columns": columns,
@@ -1086,7 +1182,7 @@ class DatalabViewSet(viewsets.ViewSet):
         if dataset.column_casts:
             df = apply_stored_casts(df, dataset.column_casts)
 
-        columns, err = _parse_outlier_columns(columns_raw, df)
+        columns, err = _parse_numeric_columns(columns_raw, df)
         if err:
             return err
 
@@ -1107,6 +1203,14 @@ class DatalabViewSet(viewsets.ViewSet):
         invalidate_dataframe_cache(dataset.id)
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="CAP_OUTLIERS",
+            details={"lower_pct": lower_pct, "upper_pct": upper_pct, "cells_capped": cells_capped},
+        )
 
         return Response({
             "columns": columns,
@@ -1133,7 +1237,7 @@ class DatalabViewSet(viewsets.ViewSet):
         if dataset.column_casts:
             df = apply_stored_casts(df, dataset.column_casts)
 
-        columns, err = _parse_outlier_columns(columns_raw, df)
+        columns, err = _parse_numeric_columns(columns_raw, df)
         if err:
             return err
 
@@ -1153,6 +1257,14 @@ class DatalabViewSet(viewsets.ViewSet):
         invalidate_dataframe_cache(dataset.id)
         dataset.file_size = dataset.file.size
         dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="TRANSFORM_COLUMN",
+            details={"function": function, "columns": transformed},
+        )
 
         return Response({
             "function": function,

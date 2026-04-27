@@ -737,7 +737,7 @@ Clone an existing dataset into a new record. Supports on-the-fly format conversi
 - **Response (201 Created)**: `Dataset` object of the new clone.
 
 ### 7. Activity Logs
-Retrieve a stream of activities performed on datasets. Logged actions: `UPLOAD`, `RENAME`, `DELETE`, `DUPLICATE`, `EXPORT`.
+Retrieve a stream of activities performed on datasets.
 
 - **Endpoint**: `GET /datasets/activity_logs/`
 - **Auth Required**: Yes
@@ -756,6 +756,29 @@ Retrieve a stream of activities performed on datasets. Logged actions: `UPLOAD`,
   }
 ]
 ```
+
+**All logged action types:**
+
+| Action | Triggered by | `details` payload |
+|---|---|---|
+| `UPLOAD` | File upload | `{}` |
+| `RENAME` | Dataset rename | `{}` |
+| `DELETE` | Dataset delete | `{}` |
+| `DUPLICATE` | Dataset duplicate | `{}` |
+| `EXPORT` | Dataset export | `{}` |
+| `UPDATE_CELL` | Update cell | `{ row_index, column, value }` |
+| `CAST` | Cast columns | `{ columns: { col: type } }` |
+| `RENAME_COLUMN` | Rename column | `{ old_name, new_name }` |
+| `DROP_DUPLICATES` | Drop duplicates | `{ mode, rows_dropped }` |
+| `REPLACE_VALUES` | Replace values | `{ cells_replaced, columns }` |
+| `DROP_NULLS` | Drop nulls | `{ axis, rows_dropped }` or `{ axis, columns_dropped }` |
+| `FILL_NULLS` | Fill nulls | `{ strategy, cells_filled }` |
+| `FILL_DERIVED` | Fill derived | `{ target, formula, cells_filled }` |
+| `FIX_FORMULA` | Fix formula | `{ target, formula, cells_fixed }` |
+| `TRIM_OUTLIERS` | Trim outliers | `{ method, threshold, rows_dropped }` |
+| `IMPUTE_OUTLIERS` | Impute outliers | `{ method, strategy, cells_imputed }` |
+| `CAP_OUTLIERS` | Cap outliers | `{ lower_pct, upper_pct, cells_capped }` |
+| `TRANSFORM_COLUMN` | Transform column | `{ function, columns }` |
 
 ---
 
@@ -798,7 +821,7 @@ Returns a row-limited slice of the dataset rendered as rows and columns for disp
 
 | Param | Type | Default | Description |
 |---|---|---|---|
-| `limit` | int | `100` | Number of rows to return. `0` returns all rows. |
+| `limit` | int | `100` | Number of rows to return. `0` = all rows, capped at 10,000. Max positive value: `10,000`. |
 
 Typical UI values: `100`, `200`, `500`, `0` (All).
 
@@ -812,6 +835,7 @@ Typical UI values: `100`, `200`, `500`, `0` (All).
   "total_rows": 1000,
   "total_columns": 3,
   "limit": 100,
+  "truncated": false,
   "columns": ["Name", "Age", "Salary"],
   "rows": [
     { "Name": "Alice", "Age": 30, "Salary": 50000 },
@@ -820,15 +844,21 @@ Typical UI values: `100`, `200`, `500`, `0` (All).
 }
 ```
 
+- **Response (400)** — limit exceeds maximum:
+```json
+{ "detail": "'limit' cannot exceed 10000." }
+```
+
 - **Response (400)** — invalid limit:
 ```json
-{ "detail": "'limit' must be a non-negative integer (0 = all rows)." }
+{ "detail": "'limit' must be a non-negative integer (0 = all rows, max 10000)." }
 ```
 
 > `null` is used for missing values (`NaN`). The `columns` array preserves the original column order.
 > `dataset_size` is a human-readable string (`B`, `KB`, `MB`, `GB`, `TB`).
 > `total_rows` always reflects the full dataset regardless of `limit`.
-> `limit: 0` in the response means all rows were returned.
+> `truncated: true` means the dataset has more rows than what was returned — show a "Showing X of Y rows" indicator in the UI.
+> `limit=0` returns up to 10,000 rows (capped). If `total_rows > 10,000` and `truncated: true`, the user is only seeing the first 10,000.
 
 ---
 
@@ -879,7 +909,7 @@ Returns structured per-column metadata: dtype, null counts, null percentage, and
 > `info.columns` is the structured per-column breakdown — use this to render the inspect table.
 > `null_pct` is rounded to 1 decimal place (e.g. `1.2` means 1.2% of rows are null for that column).
 > `unique_count` is the number of distinct non-null values in the column.
-> `is_unique` is `true` when every row has a distinct value — use this to identify ID/key columns (`user_id`, `transaction_id`, `product_id`, etc.).
+> `is_unique` is `true` when every **non-null** value in the column is distinct. Columns with nulls can still be `is_unique: true` — use it to identify ID/key columns (`user_id`, `transaction_id`, `product_id`, etc.).
 > `memory_usage_bytes` is the total deep memory usage of the dataframe in bytes.
 
 ---
@@ -1012,11 +1042,12 @@ The fill value is computed as: `target = operand_a <formula> operand_b`
 ```json
 { "detail": "Invalid 'formula'. Choose one of: ['divide', 'multiply', 'add', 'subtract']" }
 ```
-- **Response (400)** — non-numeric operand columns:
+- **Response (400)** — non-numeric columns (target or operands):
 ```json
-{ "detail": "Operand columns must be numeric: ['Quantity']" }
+{ "detail": "All three columns must be numeric: ['Quantity']" }
 ```
 
+> All three columns — `target`, `operand_a`, and `operand_b` — must be numeric.
 > If `target` is an integer-typed column, derived values are automatically rounded and cast to `Int64`.
 > Rows where `operand_b = 0` are skipped when `formula` is `"divide"` — they remain null.
 > Run `fill_derived` **before** `fill_nulls` — this fills the recoverable nulls first; use `fill_nulls` for the rest.
@@ -1197,7 +1228,7 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 | `numeric` | `pd.to_numeric(errors='coerce')` | Column contains numbers stored as strings (keeps float) |
 | `float` | `pd.to_numeric(errors='coerce')` | Same as numeric, explicit float output |
 | `integer` | `pd.to_numeric(errors='coerce').astype('Int64')` | Whole numbers; supports nulls via nullable Int64 |
-| `string` | `.astype(str)` | Force everything to string |
+| `string` | `.astype(str)` | Force everything to string — ⚠️ null values become the literal string `"nan"` |
 | `boolean` | `.astype(bool)` | Convert truthy/falsy values |
 | `category` | `.astype('category')` | Low-cardinality string columns |
 
@@ -1215,6 +1246,9 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 ```
 
 > If a column cast fails, `status` will be `"error: <reason>"` and `to_dtype` will be `null`. Other columns in the same request that succeeded are still saved.
+> Casting to `"string"` when the column has null values returns a `"warning"` status — nulls become the literal string `"nan"`. Use `force: true` to proceed anyway.
+> Successful casts are recorded in the activity log with `action: "CAST"` and `details: { columns: { col: type } }`.
+> `dataset.file_size` is synced after every successful cast.
 
 - **Response (400)** — unknown column:
 ```json
@@ -1354,6 +1388,8 @@ Rename a single column header and persist the change to disk. If the column had 
 ```
 
 > `columns` is the full updated column list in original order — use it to refresh the column headers in the UI.
+> Rename is recorded in the activity log with `action: "RENAME_COLUMN"` and `details: { old_name, new_name }`.
+> `dataset.file_size` is synced after every rename.
 
 - **Response (400)** — column not found:
 ```json
@@ -1425,7 +1461,8 @@ Edit a single cell at a specific row and column. The value is coerced to match t
 { "detail": "Column 'Quantity' not found in dataset." }
 ```
 
-> Every successful cell edit is recorded in the activity log with `action: "UPDATE_CELL"` and the details `{ row_index, column, value }`.
+> Every successful cell edit is recorded in the activity log with `action: "UPDATE_CELL"` and `details: { row_index, column, value }`.
+> `dataset.file_size` is synced after every successful cell edit.
 > Always use `row_index` values from the **current** preview response — row positions shift after operations like drop_duplicates.
 
 ---

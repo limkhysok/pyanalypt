@@ -83,6 +83,18 @@ class DatasetActivityLog(models.Model):
         ("PREVIEW", "Preview"),
         ("DIAGNOSE", "Diagnose"),
         ("AI_ANALYSIS", "AI Analysis"),
+        ("CAST", "Cast Columns"),
+        ("RENAME_COLUMN", "Rename Column"),
+        ("DROP_DUPLICATES", "Drop Duplicates"),
+        ("REPLACE_VALUES", "Replace Values"),
+        ("DROP_NULLS", "Drop Nulls"),
+        ("FILL_NULLS", "Fill Nulls"),
+        ("FILL_DERIVED", "Fill Derived"),
+        ("FIX_FORMULA", "Fix Formula"),
+        ("TRIM_OUTLIERS", "Trim Outliers"),
+        ("IMPUTE_OUTLIERS", "Impute Outliers"),
+        ("CAP_OUTLIERS", "Cap Outliers"),
+        ("TRANSFORM_COLUMN", "Transform Column"),
     ]
 
     user = models.ForeignKey(
