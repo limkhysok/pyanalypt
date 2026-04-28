@@ -19,6 +19,14 @@ trim_outliers = DatalabViewSet.as_view({"post": "trim_outliers"})
 impute_outliers = DatalabViewSet.as_view({"post": "impute_outliers"})
 cap_outliers = DatalabViewSet.as_view({"post": "cap_outliers"})
 transform_column = DatalabViewSet.as_view({"post": "transform_column"})
+drop_columns = DatalabViewSet.as_view({"post": "drop_columns"})
+add_column = DatalabViewSet.as_view({"post": "add_column"})
+filter_rows = DatalabViewSet.as_view({"post": "filter_rows"})
+clean_string = DatalabViewSet.as_view({"post": "clean_string"})
+scale_columns = DatalabViewSet.as_view({"post": "scale_columns"})
+extract_datetime = DatalabViewSet.as_view({"post": "extract_datetime"})
+encode_columns = DatalabViewSet.as_view({"post": "encode_columns"})
+normalize_column_names = DatalabViewSet.as_view({"post": "normalize_column_names"})
 
 urlpatterns = [
     path("preview/<int:dataset_id>/", preview, name="datalab-preview"),
@@ -39,4 +47,12 @@ urlpatterns = [
     path("impute-outliers/<int:dataset_id>/", impute_outliers, name="datalab-impute-outliers"),
     path("cap-outliers/<int:dataset_id>/", cap_outliers, name="datalab-cap-outliers"),
     path("transform-column/<int:dataset_id>/", transform_column, name="datalab-transform-column"),
+    path("drop-columns/<int:dataset_id>/", drop_columns, name="datalab-drop-columns"),
+    path("add-column/<int:dataset_id>/", add_column, name="datalab-add-column"),
+    path("filter-rows/<int:dataset_id>/", filter_rows, name="datalab-filter-rows"),
+    path("clean-string/<int:dataset_id>/", clean_string, name="datalab-clean-string"),
+    path("scale-columns/<int:dataset_id>/", scale_columns, name="datalab-scale-columns"),
+    path("extract-datetime/<int:dataset_id>/", extract_datetime, name="datalab-extract-datetime"),
+    path("encode-columns/<int:dataset_id>/", encode_columns, name="datalab-encode-columns"),
+    path("normalize-column-names/<int:dataset_id>/", normalize_column_names, name="datalab-normalize-column-names"),
 ]

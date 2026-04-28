@@ -779,6 +779,14 @@ Retrieve a stream of activities performed on datasets.
 | `IMPUTE_OUTLIERS` | Impute outliers | `{ method, strategy, cells_imputed }` |
 | `CAP_OUTLIERS` | Cap outliers | `{ lower_pct, upper_pct, cells_capped }` |
 | `TRANSFORM_COLUMN` | Transform column | `{ function, columns }` |
+| `DROP_COLUMNS` | Drop columns | `{ columns_dropped }` |
+| `ADD_COLUMN` | Add derived column | `{ new_name, formula, operand_a, operand_b }` |
+| `FILTER_ROWS` | Filter rows | `{ column, operator, value, rows_removed }` |
+| `CLEAN_STRING` | Clean string columns | `{ operation, columns, cells_changed }` |
+| `SCALE_COLUMNS` | Scale numeric columns | `{ method, columns }` |
+| `EXTRACT_DATETIME` | Extract datetime features | `{ source_column, added_columns }` |
+| `ENCODE_COLUMNS` | Encode categorical columns | `{ strategy, columns }` |
+| `NORMALIZE_COLUMN_NAMES` | Normalize column headers | `{ renamed }` |
 
 ---
 
@@ -808,6 +816,14 @@ All endpoints below are under `/api/v1/datalab/`.
 | 16 | `POST` | `/datalab/impute-outliers/{dataset_id}/` | Replace outlier values with column mean, median, or mode |
 | 17 | `POST` | `/datalab/cap-outliers/{dataset_id}/` | Winsorize — cap values at lower/upper percentile bounds |
 | 18 | `POST` | `/datalab/transform-column/{dataset_id}/` | Apply log, sqrt, or cbrt transformation to numeric columns |
+| 19 | `POST` | `/datalab/drop-columns/{dataset_id}/` | Drop one or more columns entirely from the dataset |
+| 20 | `POST` | `/datalab/add-column/{dataset_id}/` | Create a new column computed from two existing columns using arithmetic |
+| 21 | `POST` | `/datalab/filter-rows/{dataset_id}/` | Keep only rows that match a condition — discard the rest |
+| 22 | `POST` | `/datalab/clean-string/{dataset_id}/` | Apply string operations (strip whitespace, change case) to text columns |
+| 23 | `POST` | `/datalab/scale-columns/{dataset_id}/` | Normalize numeric columns using min-max `[0,1]` or z-score scaling |
+| 24 | `POST` | `/datalab/extract-datetime/{dataset_id}/` | Extract year/month/day/weekday/hour/minute from a datetime column into new columns |
+| 25 | `POST` | `/datalab/encode-columns/{dataset_id}/` | Encode categorical columns as integers (label) or binary indicators (one-hot) |
+| 26 | `POST` | `/datalab/normalize-column-names/{dataset_id}/` | Rename all column headers to `lowercase_snake_case` |
 
 ---
 
@@ -1247,6 +1263,18 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 
 > If a column cast fails, `status` will be `"error: <reason>"` and `to_dtype` will be `null`. Other columns in the same request that succeeded are still saved.
 > Casting to `"string"` when the column has null values returns a `"warning"` status — nulls become the literal string `"nan"`. Use `force: true` to proceed anyway.
+
+**Warning response** (returned as `400` when warnings exist and `force` is not set):
+```json
+{
+  "detail": "Some conversions are risky. Use 'force: true' to proceed.",
+  "warnings": [
+    { "column": "Name", "warning": "3 null value(s) will become the literal string 'nan'." }
+  ],
+  "validation_errors": []
+}
+```
+> `validation_errors` lists columns that cannot be cast at all (hard errors). `warnings` lists risky-but-possible conversions. Both can be non-empty at the same time. To proceed despite warnings, resubmit with `"force": true` — hard errors in `validation_errors` are always skipped regardless of `force`.
 > Successful casts are recorded in the activity log with `action: "CAST"` and `details: { columns: { col: type } }`.
 > `dataset.file_size` is synced after every successful cast.
 
@@ -1798,7 +1826,7 @@ GET /datalab/detect-outliers/15/?columns=salary&method=zscore&threshold=2.5
 ```
 - **Response (400)** — non-numeric column:
 ```json
-{ "detail": "Outlier operations require numeric columns: ['product_name']" }
+{ "detail": "Columns must be numeric: ['product_name']" }
 ```
 - **Response (400)** — invalid method:
 ```json
@@ -2087,6 +2115,525 @@ Apply a mathematical transformation to one or more numeric columns. Useful for r
 > Columns with any value that violates the function's constraint are skipped entirely (not partially transformed) and reported in `skipped_columns`.
 > After transforming, run `describe` to verify the new distribution looks as expected.
 > **This operation is irreversible** — duplicate the dataset first if you need to compare before/after.
+
+---
+
+### 19. Drop Columns
+
+Permanently remove one or more columns from the dataset. Stored dtype casts for dropped columns are automatically cleaned up.
+
+- **Endpoint**: `POST /datalab/drop-columns/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `columns` | array of strings | Yes | Column names to drop |
+
+```json
+{ "columns": ["legacy_id", "notes", "Unnamed: 0"] }
+```
+
+#### Responses
+
+- **Response (200)** — columns dropped:
+```json
+{
+  "columns_dropped": ["legacy_id", "notes", "Unnamed: 0"],
+  "remaining_columns": ["user_id", "name", "salary", "date"]
+}
+```
+
+- **Response (400)** — column not found:
+```json
+{ "detail": "Columns not found in dataset: ['bad_col']" }
+```
+
+> `remaining_columns` is the full list of columns still in the dataset — use it to refresh the column display in the UI.
+> After dropping, re-fetch `inspect` to update null counts and memory usage.
+> **This is irreversible** — duplicate the dataset first if unsure.
+
+---
+
+### 20. Add Derived Column
+
+Create a new column by computing `operand_a <formula> operand_b` across every row. Unlike `fill-derived` (which only fills nulls in an existing column), this always creates a brand-new column.
+
+- **Endpoint**: `POST /datalab/add-column/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `new_name` | string | Yes | Name for the new column |
+| `formula` | string | Yes | `"divide"`, `"multiply"`, `"add"`, `"subtract"` |
+| `operand_a` | string | Yes | Left-hand column (must be numeric) |
+| `operand_b` | string | Yes | Right-hand column (must be numeric) |
+
+**Create a `profit_margin` column from `profit ÷ revenue`:**
+```json
+{
+  "new_name": "profit_margin",
+  "formula": "divide",
+  "operand_a": "profit",
+  "operand_b": "revenue"
+}
+```
+
+**Create a `total_price` column from `quantity × unit_price`:**
+```json
+{
+  "new_name": "total_price",
+  "formula": "multiply",
+  "operand_a": "quantity",
+  "operand_b": "unit_price"
+}
+```
+
+#### Responses
+
+- **Response (200)** — column added:
+```json
+{
+  "new_column": "profit_margin",
+  "formula": "divide",
+  "operand_a": "profit",
+  "operand_b": "revenue",
+  "total_columns": 9
+}
+```
+
+- **Response (400)** — column name already exists:
+```json
+{ "detail": "Column 'profit_margin' already exists. Use rename-column or choose a different name." }
+```
+
+- **Response (400)** — non-numeric operand:
+```json
+{ "detail": "Operand columns must be numeric: ['revenue']" }
+```
+
+> For `divide`, rows where `operand_b` is `0` produce `null` (not an error).
+> Both operand columns must be numeric. The new column is always appended as the last column.
+
+---
+
+### 21. Filter Rows
+
+Keep only the rows that match a condition and discard the rest. This permanently removes rows from the dataset — use `detect-outliers` or `preview` to audit before committing.
+
+- **Endpoint**: `POST /datalab/filter-rows/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `column` | string | Yes | Column to apply the filter condition to |
+| `operator` | string | Yes | Comparison operator (see table below) |
+| `value` | any | Depends | The value to compare against. Not required for `isnull` / `notnull`. |
+
+**Operator reference:**
+
+| Operator | Meaning | Example use |
+|---|---|---|
+| `eq` | Equal to | Keep rows where `status == "active"` |
+| `ne` | Not equal to | Remove rows where `country == "Unknown"` |
+| `gt` | Greater than | Keep rows where `age > 18` |
+| `gte` | Greater than or equal | Keep rows where `salary >= 30000` |
+| `lt` | Less than | Keep rows where `score < 100` |
+| `lte` | Less than or equal | Keep rows where `discount <= 50` |
+| `contains` | String contains (case-sensitive) | Keep rows where `email` contains `"@gmail"` |
+| `not_contains` | String does not contain | Remove rows where `notes` contains `"test"` |
+| `isnull` | Value is null | Keep only rows with missing `phone_number` |
+| `notnull` | Value is not null | Drop rows where `user_id` is missing |
+
+**Keep only active users:**
+```json
+{ "column": "status", "operator": "eq", "value": "active" }
+```
+
+**Remove rows where salary is zero or missing:**
+```json
+{ "column": "salary", "operator": "gt", "value": 0 }
+```
+
+**Keep only rows with a valid email:**
+```json
+{ "column": "email", "operator": "notnull" }
+```
+
+#### Responses
+
+- **Response (200)** — rows removed:
+```json
+{
+  "column": "status",
+  "operator": "eq",
+  "value": "active",
+  "rows_before": 1000,
+  "rows_after": 742,
+  "rows_removed": 258
+}
+```
+
+- **Response (200)** — no rows removed (all matched the filter):
+```json
+{
+  "column": "status",
+  "operator": "eq",
+  "value": "active",
+  "rows_before": 1000,
+  "rows_after": 1000,
+  "rows_removed": 0,
+  "detail": "No rows were removed — all rows matched the filter."
+}
+```
+
+- **Response (400)** — invalid operator:
+```json
+{ "detail": "Invalid 'operator'. Choose one of: ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains', 'not_contains', 'isnull', 'notnull']" }
+```
+
+- **Response (400)** — value missing:
+```json
+{ "detail": "'value' is required for operator 'eq'." }
+```
+
+> Row indices reset to 0-based after filtering — always re-fetch `preview` before using `update-cell`.
+> `contains` / `not_contains` perform a literal string search (not regex). All values are cast to string before matching.
+
+---
+
+### 22. Clean String Columns
+
+Apply a string-cleaning operation to one or more text columns. Useful for normalizing inconsistent user-entered data before analysis.
+
+- **Endpoint**: `POST /datalab/clean-string/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `columns` | array of strings | Yes | Text columns to clean (must be object/string dtype) |
+| `operation` | string | Yes | Operation to apply (see table below) |
+
+**Operation reference:**
+
+| Operation | What it does | Example: `" hello World "` → |
+|---|---|---|
+| `strip` | Remove leading and trailing whitespace | `"hello World"` |
+| `lower` | Convert to all lowercase | `" hello world "` |
+| `upper` | Convert to all uppercase | `" HELLO WORLD "` |
+| `title` | Capitalize first letter of each word | `" Hello World "` |
+
+**Strip whitespace from name columns:**
+```json
+{ "columns": ["first_name", "last_name"], "operation": "strip" }
+```
+
+**Normalize country values to title case:**
+```json
+{ "columns": ["country", "city"], "operation": "title" }
+```
+
+**Lowercase email addresses:**
+```json
+{ "columns": ["email"], "operation": "lower" }
+```
+
+#### Responses
+
+- **Response (200)** — values changed:
+```json
+{
+  "operation": "strip",
+  "columns": ["first_name", "last_name"],
+  "cells_changed": 34
+}
+```
+
+- **Response (200)** — no changes (all values already clean):
+```json
+{
+  "operation": "strip",
+  "columns": ["email"],
+  "cells_changed": 0,
+  "detail": "No values were changed."
+}
+```
+
+- **Response (400)** — non-text column:
+```json
+{ "detail": "String operations only apply to text columns: ['age']" }
+```
+
+> `cells_changed` counts only cells where the value actually changed — NaN values are not counted.
+> Run `strip` before `lower` / `upper` / `title` if columns may have leading/trailing whitespace.
+
+---
+
+### 23. Scale (Normalize) Columns
+
+Normalize numeric columns so values fall on a consistent scale. Essential before distance-based algorithms (KNN, clustering) or when combining columns with different units.
+
+- **Endpoint**: `POST /datalab/scale-columns/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `columns` | array of strings | Yes | — | Numeric columns to scale |
+| `method` | string | No | `"minmax"` | `"minmax"` or `"zscore"` |
+
+**Method reference:**
+
+| Method | Formula | Output range | Use when |
+|---|---|---|---|
+| `minmax` | `(x − min) / (max − min)` | `[0, 1]` | You need bounded output; values have no meaningful distribution |
+| `zscore` | `(x − mean) / std` | Unbounded (mean=0, std=1) | Data is approximately normal; you need to compare across distributions |
+
+**Min-max scale age and salary:**
+```json
+{
+  "columns": ["age", "salary"],
+  "method": "minmax"
+}
+```
+
+**Z-score normalize before clustering:**
+```json
+{
+  "columns": ["revenue", "units_sold", "avg_order_value"],
+  "method": "zscore"
+}
+```
+
+#### Responses
+
+- **Response (200)** — columns scaled:
+```json
+{
+  "method": "minmax",
+  "scaled_columns": ["age", "salary"],
+  "skipped_columns": []
+}
+```
+
+- **Response (200)** — some columns skipped:
+```json
+{
+  "method": "minmax",
+  "scaled_columns": ["salary"],
+  "skipped_columns": [
+    { "column": "status_code", "reason": "all values identical — cannot min-max scale" }
+  ]
+}
+```
+
+- **Response (200)** — all skipped (no file write):
+```json
+{
+  "method": "minmax",
+  "scaled_columns": [],
+  "skipped_columns": [...],
+  "detail": "No columns were scaled."
+}
+```
+
+> `minmax` skips columns where all values are identical (division by zero).
+> `zscore` skips columns where `std = 0` (all values are the same).
+> **This is irreversible** — the original scale is lost. Duplicate the dataset first if you need to compare pre/post.
+> After scaling, run `describe` to verify that `min`, `max`, `mean`, and `std` look correct.
+
+---
+
+### 24. Extract Datetime Features
+
+Parse a datetime column and extract sub-fields (year, month, day, etc.) into new integer columns. Useful for making temporal patterns accessible to ML models that cannot use raw timestamps.
+
+- **Endpoint**: `POST /datalab/extract-datetime/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `column` | string | Yes | Source datetime column to parse |
+| `features` | array of strings | Yes | Sub-fields to extract (see table below) |
+
+**Available features:**
+
+| Feature | New column name | Values |
+|---|---|---|
+| `year` | `{column}_year` | e.g. `2024` |
+| `month` | `{column}_month` | `1`–`12` |
+| `day` | `{column}_day` | `1`–`31` |
+| `weekday` | `{column}_weekday` | `0` (Monday) – `6` (Sunday) |
+| `hour` | `{column}_hour` | `0`–`23` |
+| `minute` | `{column}_minute` | `0`–`59` |
+
+**Extract year, month, and weekday from an order date:**
+```json
+{
+  "column": "order_date",
+  "features": ["year", "month", "weekday"]
+}
+```
+
+**Extract all time components from a timestamp:**
+```json
+{
+  "column": "created_at",
+  "features": ["year", "month", "day", "hour", "minute"]
+}
+```
+
+#### Responses
+
+- **Response (200)** — features extracted:
+```json
+{
+  "source_column": "order_date",
+  "added_columns": ["order_date_year", "order_date_month", "order_date_weekday"],
+  "total_columns": 12
+}
+```
+
+- **Response (400)** — column not found:
+```json
+{ "detail": "Column 'order_date' not found in dataset." }
+```
+
+- **Response (400)** — output columns already exist:
+```json
+{ "detail": "Columns already exist: ['order_date_year']. Rename or drop them first." }
+```
+
+- **Response (400)** — invalid feature name:
+```json
+{ "detail": "Invalid features: ['quarter']. Choose from: ['year', 'month', 'day', 'weekday', 'hour', 'minute']" }
+```
+
+> The source column does not need to be already cast as `datetime` — the engine calls `pd.to_datetime(errors='coerce')` internally. Rows that cannot be parsed produce `null` in the new columns.
+> New columns are always appended after the existing columns.
+> The source column itself is not removed or modified.
+
+---
+
+### 25. Encode Categorical Columns
+
+Encode string/categorical columns as numbers. Required before most ML algorithms that cannot handle text labels directly.
+
+- **Endpoint**: `POST /datalab/encode-columns/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `columns` | array of strings | Yes | — | Columns to encode |
+| `strategy` | string | No | `"label"` | `"label"` or `"onehot"` |
+
+**Strategy reference:**
+
+| Strategy | What it does | Output | Use when |
+|---|---|---|---|
+| `label` | Replaces each unique value with an integer (0-based) | Replaces the column in-place | Ordinal data or tree-based models |
+| `onehot` | Creates one binary column per unique value; drops original | Adds N new columns | Nominal data; linear models |
+
+**Label-encode a `status` column:**
+```json
+{ "columns": ["status"], "strategy": "label" }
+```
+
+**One-hot encode a `country` column:**
+```json
+{ "columns": ["country"], "strategy": "onehot" }
+```
+
+#### Responses
+
+- **Response (200)** — label encoding:
+```json
+{
+  "strategy": "label",
+  "result": [
+    {
+      "column": "status",
+      "strategy": "label",
+      "mapping": { "active": 0, "inactive": 1, "pending": 2 }
+    }
+  ],
+  "total_columns": 8
+}
+```
+
+- **Response (200)** — one-hot encoding:
+```json
+{
+  "strategy": "onehot",
+  "result": [
+    {
+      "column": "country",
+      "strategy": "onehot",
+      "new_columns": ["country_Cambodia", "country_Thailand", "country_Vietnam"]
+    }
+  ],
+  "total_columns": 11
+}
+```
+
+- **Response (400)** — column not found:
+```json
+{ "detail": "Columns not found in dataset: ['bad_col']" }
+```
+
+> **Label encoding**: The integer assignment is based on order of first appearance (`pd.factorize`), not alphabetical. Save the `mapping` from the response if you need to reverse-decode later.
+> **One-hot encoding**: The original column is dropped and replaced with binary indicator columns. Column names follow the pattern `{original_column}_{value}`. High-cardinality columns (hundreds of unique values) will create many new columns — check `total_columns` in the response.
+> After one-hot encoding, re-fetch `inspect` as the column list has changed significantly.
+
+---
+
+### 26. Normalize Column Names
+
+Rename all column headers to `lowercase_snake_case` — removes spaces, special characters, and mixed casing. Stored dtype casts are automatically migrated to the new names.
+
+- **Endpoint**: `POST /datalab/normalize-column-names/{dataset_id}/`
+- **Auth Required**: Yes
+- **Request Body**: *(empty — no parameters needed)*
+
+#### Responses
+
+- **Response (200)** — columns renamed:
+```json
+{
+  "renamed": {
+    "First Name": "first_name",
+    "Last Name": "last_name",
+    "Date Of Birth": "date_of_birth",
+    "Total $$$": "total___"
+  },
+  "columns": ["user_id", "first_name", "last_name", "date_of_birth", "salary", "total___"]
+}
+```
+
+- **Response (200)** — already normalized (no file write):
+```json
+{
+  "detail": "All column names are already normalized.",
+  "columns": ["user_id", "first_name", "salary"]
+}
+```
+
+> `renamed` only includes columns that were actually changed — columns already in snake_case are omitted.
+> `columns` is the full updated list in order — use it to refresh the column display.
+> Special characters (spaces, `$`, `%`, `-`, etc.) are replaced with `_`. Leading/trailing underscores are stripped.
+> Run this early in the cleaning pipeline — normalized names make all subsequent operations less error-prone.
 
 ---
 

@@ -663,6 +663,187 @@ def transform_column(df, columns, function="log"):
     return df, transformed, skipped
 
 
+FILTER_OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte", "contains", "not_contains", "isnull", "notnull")
+STRING_OPERATIONS = ("strip", "lower", "upper", "title")
+SCALE_METHODS = ("minmax", "zscore")
+DATETIME_FEATURES = ("year", "month", "day", "weekday", "hour", "minute")
+ENCODE_STRATEGIES = ("label", "onehot")
+
+
+def drop_columns(df, columns):
+    """Drop specified columns from df. Returns (df, dropped_list)."""
+    to_drop = [c for c in columns if c in df.columns]
+    return df.drop(columns=to_drop), to_drop
+
+
+def add_column(df, new_name, formula, operand_a, operand_b):
+    """
+    Create a new column by applying formula to operand_a and operand_b.
+    divide replaces denominator zeros with NaN.
+    Returns the modified df.
+    """
+    if formula == "divide":
+        df[new_name] = df[operand_a] / df[operand_b].replace(0, np.nan)
+    elif formula == "multiply":
+        df[new_name] = df[operand_a] * df[operand_b]
+    elif formula == "add":
+        df[new_name] = df[operand_a] + df[operand_b]
+    else:  # subtract
+        df[new_name] = df[operand_a] - df[operand_b]
+    return df
+
+
+def filter_rows(df, column, operator, value=None):
+    """
+    Keep only rows matching the condition column <operator> value.
+    isnull/notnull do not require value.
+    Returns (df, rows_before, rows_after).
+    """
+    rows_before = len(df)
+    col = df[column]
+    if operator == "eq":
+        mask = col == value
+    elif operator == "ne":
+        mask = col != value
+    elif operator == "gt":
+        mask = col > value
+    elif operator == "gte":
+        mask = col >= value
+    elif operator == "lt":
+        mask = col < value
+    elif operator == "lte":
+        mask = col <= value
+    elif operator == "contains":
+        mask = col.astype(str).str.contains(str(value), na=False, regex=False)
+    elif operator == "not_contains":
+        mask = ~col.astype(str).str.contains(str(value), na=False, regex=False)
+    elif operator == "isnull":
+        mask = col.isna()
+    else:  # notnull
+        mask = col.notna()
+    df = df[mask].reset_index(drop=True)
+    return df, rows_before, len(df)
+
+
+def clean_string_column(df, columns, operation):
+    """
+    Apply a string operation (strip/lower/upper/title) to object/string columns.
+    Returns (df, cells_changed).
+    """
+    cells_changed = 0
+    for col in columns:
+        before = df[col].copy()
+        if operation == "strip":
+            df[col] = df[col].str.strip()
+        elif operation == "lower":
+            df[col] = df[col].str.lower()
+        elif operation == "upper":
+            df[col] = df[col].str.upper()
+        elif operation == "title":
+            df[col] = df[col].str.title()
+        changed = df[col].compare(before)
+        cells_changed += len(changed)
+    return df, cells_changed
+
+
+def scale_columns(df, columns, method="minmax"):
+    """
+    Scale numeric columns in-place.
+    minmax → [0, 1]; zscore → mean=0, std=1.
+    Returns (df, scaled_columns, skipped_columns).
+    """
+    scaled = []
+    skipped = []
+    for col in columns:
+        valid = df[col].dropna()
+        if valid.empty:
+            skipped.append({"column": col, "reason": "no non-null values"})
+            continue
+        if method == "minmax":
+            col_min, col_max = float(valid.min()), float(valid.max())
+            if col_min == col_max:
+                skipped.append({"column": col, "reason": "all values identical — cannot min-max scale"})
+                continue
+            df[col] = (df[col] - col_min) / (col_max - col_min)
+        else:  # zscore
+            mean, std = float(valid.mean()), float(valid.std())
+            if std == 0:
+                skipped.append({"column": col, "reason": "std is 0 — cannot z-score scale"})
+                continue
+            df[col] = (df[col] - mean) / std
+        scaled.append(col)
+    return df, scaled, skipped
+
+
+def extract_datetime_features(df, column, features):
+    """
+    Extract datetime sub-fields from a datetime column into new columns named {column}_{feature}.
+    Returns (df, added_columns).
+    """
+    series = pd.to_datetime(df[column], errors="coerce")
+    added = []
+    attr_map = {
+        "year": series.dt.year,
+        "month": series.dt.month,
+        "day": series.dt.day,
+        "weekday": series.dt.weekday,
+        "hour": series.dt.hour,
+        "minute": series.dt.minute,
+    }
+    for feat in features:
+        if feat not in attr_map:
+            continue
+        new_col = f"{column}_{feat}"
+        df[new_col] = attr_map[feat]
+        added.append(new_col)
+    return df, added
+
+
+def encode_columns(df, columns, strategy="label"):
+    """
+    Encode categorical columns.
+    label  — replaces values with integer codes (0-based); returns mapping per column.
+    onehot — adds binary indicator columns and drops the original.
+    Returns (df, result_info).
+    result_info is a list of dicts per column describing what was done.
+    """
+    result_info = []
+    for col in columns:
+        if strategy == "label":
+            codes, uniques = pd.factorize(df[col])
+            df[col] = codes
+            result_info.append({
+                "column": col,
+                "strategy": "label",
+                "mapping": {str(k): int(v) for v, k in enumerate(uniques)},
+            })
+        else:  # onehot
+            dummies = pd.get_dummies(df[col], prefix=col, dtype=int)
+            new_cols = list(dummies.columns)
+            df = pd.concat([df.drop(columns=[col]), dummies], axis=1)
+            result_info.append({
+                "column": col,
+                "strategy": "onehot",
+                "new_columns": new_cols,
+            })
+    return df, result_info
+
+
+def normalize_column_names(df):
+    """Rename all columns to lowercase_snake_case. Returns (df, rename_map)."""
+    old_names = list(df.columns)
+    df = df.copy()
+    df.columns = (
+        df.columns.astype(str)
+        .str.lower()
+        .str.strip()
+        .str.replace(r"[^\w]+", "_", regex=True)
+        .str.strip("_")
+    )
+    rename_map = {old: new for old, new in zip(old_names, df.columns) if old != new}
+    return df, rename_map
+
+
 def generate_summary_stats(df):
     """
     Per-column summary statistics suitable for JSON serialization.

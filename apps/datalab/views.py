@@ -27,12 +27,25 @@ from apps.core.data_engine import (
     impute_outliers as df_impute_outliers,
     cap_outliers as df_cap_outliers,
     transform_column as df_transform_column,
+    drop_columns as df_drop_columns,
+    add_column as df_add_column,
+    filter_rows as df_filter_rows,
+    clean_string_column as df_clean_string_column,
+    scale_columns as df_scale_columns,
+    extract_datetime_features as df_extract_datetime_features,
+    encode_columns as df_encode_columns,
+    normalize_column_names as df_normalize_column_names,
     FILL_STRATEGIES,
     SUPPORTED_CASTS,
     SUPPORTED_FORMULAS,
     OUTLIER_METHODS,
     OUTLIER_IMPUTE_STRATEGIES,
     COLUMN_TRANSFORMS,
+    FILTER_OPERATORS,
+    STRING_OPERATIONS,
+    SCALE_METHODS,
+    DATETIME_FEATURES,
+    ENCODE_STRATEGIES,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,11 +72,11 @@ def _validate_casts(df, casts):
 
 
 def _format_size(size_bytes):
-    for unit in ("B", "KB", "MB", "GB"):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
         if size_bytes < 1024:
             return f"{size_bytes:.1f} {unit}"
         size_bytes /= 1024
-    return f"{size_bytes:.1f} TB"
+    return f"{size_bytes:.1f} PB"
 
 
 _DEDUP_MODES = ("all_first", "all_last", "subset_keep", "drop_all")
@@ -155,7 +168,7 @@ def _parse_numeric_columns(source, df):
     non_numeric = [c for c in columns if not pd.api.types.is_numeric_dtype(df[c])]
     if non_numeric:
         return None, Response(
-            {"detail": f"Outlier operations require numeric columns: {non_numeric}"},
+            {"detail": f"Columns must be numeric: {non_numeric}"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     return columns, None
@@ -186,6 +199,100 @@ def _validate_drop_nulls_params(axis, how, thresh_pct):
     return None
 
 
+def _apply_casts(df, casts, error_cols, col_validated_data):
+    """Attempt each requested cast, skipping known-error columns. Returns results list."""
+    results = []
+    for col, target in casts.items():
+        if col in error_cols:
+            continue
+        from_dtype = str(df[col].dtype)
+        try:
+            df[col] = apply_cast(df[col], target)
+            results.append({
+                "column": col,
+                "from_dtype": from_dtype,
+                "to_dtype": str(df[col].dtype),
+                "status": "ok",
+                "validation": col_validated_data[col],
+            })
+        except Exception as exc:
+            results.append({
+                "column": col,
+                "from_dtype": from_dtype,
+                "to_dtype": None,
+                "status": "error",
+                "detail": str(exc),
+            })
+    return results
+
+
+def _resolve_formula_context(request, dataset_id, target_field="target"):
+    """
+    Parse and validate common formula endpoint parameters.
+    Returns (error_response, None) on failure, or (None, ctx_dict) on success.
+    ctx_dict keys: df, dataset, target, formula, operand_a, operand_b, tolerance.
+    """
+    target = request.data.get(target_field, "").strip()
+    formula = request.data.get("formula", "").strip()
+    operand_a = request.data.get("operand_a", "").strip()
+    operand_b = request.data.get("operand_b", "").strip()
+    tolerance = request.data.get("tolerance", 0.01)
+
+    if not all([target, formula, operand_a, operand_b]):
+        return Response(
+            {"detail": f"'{target_field}', 'formula', 'operand_a', and 'operand_b' are all required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+
+    if formula not in SUPPORTED_FORMULAS:
+        return Response(
+            {"detail": f"Invalid 'formula'. Choose one of: {list(SUPPORTED_FORMULAS)}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+
+    try:
+        tolerance = float(tolerance)
+        if tolerance < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "'tolerance' must be a non-negative number."},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+
+    dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+    df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+    if df is None:
+        return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST), None
+
+    if dataset.column_casts:
+        df = apply_stored_casts(df, dataset.column_casts)
+
+    missing = [c for c in [target, operand_a, operand_b] if c not in df.columns]
+    if missing:
+        return Response(
+            {"detail": f"Columns not found in dataset: {missing}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+
+    non_numeric = [c for c in [target, operand_a, operand_b] if not pd.api.types.is_numeric_dtype(df[c])]
+    if non_numeric:
+        return Response(
+            {"detail": f"All three columns must be numeric: {non_numeric}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        ), None
+
+    return None, {
+        "df": df,
+        "dataset": dataset,
+        "target": target,
+        "formula": formula,
+        "operand_a": operand_a,
+        "operand_b": operand_b,
+        "tolerance": tolerance,
+    }
+
+
 class DatalabViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -201,7 +308,7 @@ class DatalabViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if 0 < limit > _MAX_PREVIEW_LIMIT:
+        if limit > _MAX_PREVIEW_LIMIT:
             return Response(
                 {"detail": f"'limit' cannot exceed {_MAX_PREVIEW_LIMIT}."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -309,31 +416,11 @@ class DatalabViewSet(viewsets.ViewSet):
             return Response({
                 "detail": "Some conversions are risky. Use 'force: true' to proceed.",
                 "warnings": validation_warnings,
-                "errors": results,
+                "validation_errors": results,
             }, status=status.HTTP_400_BAD_REQUEST)
 
         error_cols = {r["column"] for r in results}
-        for col, target in casts.items():
-            if col in error_cols:
-                continue
-            from_dtype = str(df[col].dtype)
-            try:
-                df[col] = apply_cast(df[col], target)
-                results.append({
-                    "column": col,
-                    "from_dtype": from_dtype,
-                    "to_dtype": str(df[col].dtype),
-                    "status": "ok",
-                    "validation": col_validated_data[col],
-                })
-            except Exception as exc:
-                results.append({
-                    "column": col,
-                    "from_dtype": from_dtype,
-                    "to_dtype": None,
-                    "status": "error",
-                    "detail": str(exc),
-                })
+        results += _apply_casts(df, casts, error_cols, col_validated_data)
 
         # Persist cast preferences so they survive reload (flat files lose type info)
         successful = {r["column"]: casts[r["column"]] for r in results if r["status"] == "ok"}
@@ -344,7 +431,7 @@ class DatalabViewSet(viewsets.ViewSet):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
             invalidate_dataframe_cache(dataset.id)
-            dataset.column_casts = {**dataset.column_casts, **successful}
+            dataset.column_casts = {**(dataset.column_casts or {}), **successful}
             dataset.file_size = dataset.file.size
             dataset.save(update_fields=["column_casts", "file_size", "updated_date"])
 
@@ -763,55 +850,12 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def validate_formula(self, request, dataset_id=None):
         """POST /datalab/validate-formula/{dataset_id}/"""
-        result_column = request.data.get("result_column", "").strip()
-        formula = request.data.get("formula", "").strip()
-        operand_a = request.data.get("operand_a", "").strip()
-        operand_b = request.data.get("operand_b", "").strip()
-        tolerance = request.data.get("tolerance", 0.01)
-
-        if not all([result_column, formula, operand_a, operand_b]):
-            return Response(
-                {"detail": "'result_column', 'formula', 'operand_a', and 'operand_b' are all required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if formula not in SUPPORTED_FORMULAS:
-            return Response(
-                {"detail": f"Invalid 'formula'. Choose one of: {list(SUPPORTED_FORMULAS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            tolerance = float(tolerance)
-            if tolerance < 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response(
-                {"detail": "'tolerance' must be a non-negative number."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
-        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
-        if df is None:
-            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
-
-        if dataset.column_casts:
-            df = apply_stored_casts(df, dataset.column_casts)
-
-        missing = [c for c in [result_column, operand_a, operand_b] if c not in df.columns]
-        if missing:
-            return Response(
-                {"detail": f"Columns not found in dataset: {missing}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        non_numeric = [c for c in [result_column, operand_a, operand_b] if not pd.api.types.is_numeric_dtype(df[c])]
-        if non_numeric:
-            return Response(
-                {"detail": f"All three columns must be numeric: {non_numeric}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        err, ctx = _resolve_formula_context(request, dataset_id, target_field="result_column")
+        if err:
+            return err
+        df = ctx["df"]
+        result_column, formula = ctx["target"], ctx["formula"]
+        operand_a, operand_b, tolerance = ctx["operand_a"], ctx["operand_b"], ctx["tolerance"]
 
         result = df_validate_formula(df, result_column, formula, operand_a, operand_b, tolerance)
         return Response({
@@ -824,55 +868,12 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def fix_formula(self, request, dataset_id=None):
         """POST /datalab/fix-formula/{dataset_id}/"""
-        target = request.data.get("target", "").strip()
-        formula = request.data.get("formula", "").strip()
-        operand_a = request.data.get("operand_a", "").strip()
-        operand_b = request.data.get("operand_b", "").strip()
-        tolerance = request.data.get("tolerance", 0.01)
-
-        if not all([target, formula, operand_a, operand_b]):
-            return Response(
-                {"detail": "'target', 'formula', 'operand_a', and 'operand_b' are all required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if formula not in SUPPORTED_FORMULAS:
-            return Response(
-                {"detail": f"Invalid 'formula'. Choose one of: {list(SUPPORTED_FORMULAS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            tolerance = float(tolerance)
-            if tolerance < 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response(
-                {"detail": "'tolerance' must be a non-negative number."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
-        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
-        if df is None:
-            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
-
-        if dataset.column_casts:
-            df = apply_stored_casts(df, dataset.column_casts)
-
-        missing = [c for c in [target, operand_a, operand_b] if c not in df.columns]
-        if missing:
-            return Response(
-                {"detail": f"Columns not found in dataset: {missing}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        non_numeric = [c for c in [target, operand_a, operand_b] if not pd.api.types.is_numeric_dtype(df[c])]
-        if non_numeric:
-            return Response(
-                {"detail": f"All three columns must be numeric: {non_numeric}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        err, ctx = _resolve_formula_context(request, dataset_id, target_field="target")
+        if err:
+            return err
+        df, dataset = ctx["df"], ctx["dataset"]
+        target, formula = ctx["target"], ctx["formula"]
+        operand_a, operand_b, tolerance = ctx["operand_a"], ctx["operand_b"], ctx["tolerance"]
 
         df, cells_fixed = df_fix_formula_errors(df, target, formula, operand_a, operand_b, tolerance)
 
@@ -1270,4 +1271,486 @@ class DatalabViewSet(viewsets.ViewSet):
             "function": function,
             "transformed_columns": transformed,
             "skipped_columns": skipped,
+        })
+
+    def drop_columns(self, request, dataset_id=None):
+        """POST /datalab/drop-columns/{dataset_id}/"""
+        columns = request.data.get("columns")
+        if not isinstance(columns, list) or not columns:
+            return Response(
+                {"detail": "'columns' must be a non-empty list of column names."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        unknown = [c for c in columns if c not in df.columns]
+        if unknown:
+            return Response(
+                {"detail": f"Columns not found in dataset: {unknown}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        df, dropped = df_drop_columns(df, columns)
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+
+        # Remove dropped columns from stored casts
+        if dataset.column_casts:
+            dataset.column_casts = {k: v for k, v in dataset.column_casts.items() if k not in dropped}
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "column_casts", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="DROP_COLUMNS",
+            details={"columns_dropped": dropped},
+        )
+
+        return Response({
+            "columns_dropped": dropped,
+            "remaining_columns": list(df.columns),
+        })
+
+    def add_column(self, request, dataset_id=None):
+        """POST /datalab/add-column/{dataset_id}/"""
+        new_name = request.data.get("new_name", "").strip()
+        formula = request.data.get("formula", "").strip()
+        operand_a = request.data.get("operand_a", "").strip()
+        operand_b = request.data.get("operand_b", "").strip()
+
+        if not all([new_name, formula, operand_a, operand_b]):
+            return Response(
+                {"detail": "'new_name', 'formula', 'operand_a', and 'operand_b' are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if formula not in SUPPORTED_FORMULAS:
+            return Response(
+                {"detail": f"Invalid 'formula'. Choose one of: {list(SUPPORTED_FORMULAS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        if new_name in df.columns:
+            return Response(
+                {"detail": f"Column '{new_name}' already exists. Use rename-column or choose a different name."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        missing = [c for c in [operand_a, operand_b] if c not in df.columns]
+        if missing:
+            return Response(
+                {"detail": f"Columns not found in dataset: {missing}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        non_numeric = [c for c in [operand_a, operand_b] if not pd.api.types.is_numeric_dtype(df[c])]
+        if non_numeric:
+            return Response(
+                {"detail": f"Operand columns must be numeric: {non_numeric}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        df = df_add_column(df, new_name, formula, operand_a, operand_b)
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="ADD_COLUMN",
+            details={"new_name": new_name, "formula": formula, "operand_a": operand_a, "operand_b": operand_b},
+        )
+
+        return Response({
+            "new_column": new_name,
+            "formula": formula,
+            "operand_a": operand_a,
+            "operand_b": operand_b,
+            "total_columns": len(df.columns),
+        })
+
+    def filter_rows(self, request, dataset_id=None):
+        """POST /datalab/filter-rows/{dataset_id}/"""
+        column = request.data.get("column", "").strip()
+        operator = request.data.get("operator", "").strip()
+        value = request.data.get("value")
+
+        if not column or not operator:
+            return Response(
+                {"detail": "'column' and 'operator' are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if operator not in FILTER_OPERATORS:
+            return Response(
+                {"detail": f"Invalid 'operator'. Choose one of: {list(FILTER_OPERATORS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if operator not in ("isnull", "notnull") and value is None:
+            return Response(
+                {"detail": f"'value' is required for operator '{operator}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        if column not in df.columns:
+            return Response(
+                {"detail": f"Column '{column}' not found in dataset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            df, rows_before, rows_after = df_filter_rows(df, column, operator, value)
+        except (TypeError, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        rows_removed = rows_before - rows_after
+
+        if rows_removed == 0:
+            return Response({
+                "column": column, "operator": operator, "value": value,
+                "rows_before": rows_before, "rows_after": rows_after, "rows_removed": 0,
+                "detail": "No rows were removed — all rows matched the filter.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="FILTER_ROWS",
+            details={"column": column, "operator": operator, "value": str(value), "rows_removed": rows_removed},
+        )
+
+        return Response({
+            "column": column,
+            "operator": operator,
+            "value": value,
+            "rows_before": rows_before,
+            "rows_after": rows_after,
+            "rows_removed": rows_removed,
+        })
+
+    def clean_string(self, request, dataset_id=None):
+        """POST /datalab/clean-string/{dataset_id}/"""
+        columns = request.data.get("columns")
+        operation = request.data.get("operation", "").strip()
+
+        if not isinstance(columns, list) or not columns:
+            return Response(
+                {"detail": "'columns' must be a non-empty list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if operation not in STRING_OPERATIONS:
+            return Response(
+                {"detail": f"'operation' must be one of: {list(STRING_OPERATIONS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        unknown = [c for c in columns if c not in df.columns]
+        if unknown:
+            return Response(
+                {"detail": f"Columns not found in dataset: {unknown}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        non_string = [c for c in columns if df[c].dtype not in (object,) and not pd.api.types.is_string_dtype(df[c])]
+        if non_string:
+            return Response(
+                {"detail": f"String operations only apply to text columns: {non_string}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        df, cells_changed = df_clean_string_column(df, columns, operation)
+
+        if cells_changed == 0:
+            return Response({
+                "operation": operation,
+                "columns": columns,
+                "cells_changed": 0,
+                "detail": "No values were changed.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="CLEAN_STRING",
+            details={"operation": operation, "columns": columns, "cells_changed": cells_changed},
+        )
+
+        return Response({
+            "operation": operation,
+            "columns": columns,
+            "cells_changed": cells_changed,
+        })
+
+    def scale_columns(self, request, dataset_id=None):
+        """POST /datalab/scale-columns/{dataset_id}/"""
+        columns_raw = request.data.get("columns")
+        method = request.data.get("method", "minmax")
+
+        if method not in SCALE_METHODS:
+            return Response(
+                {"detail": f"'method' must be one of: {list(SCALE_METHODS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        columns, err = _parse_numeric_columns(columns_raw, df)
+        if err:
+            return err
+
+        df, scaled, skipped = df_scale_columns(df, columns, method=method)
+
+        if not scaled:
+            return Response({
+                "method": method,
+                "scaled_columns": [],
+                "skipped_columns": skipped,
+                "detail": "No columns were scaled.",
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="SCALE_COLUMNS",
+            details={"method": method, "columns": scaled},
+        )
+
+        return Response({
+            "method": method,
+            "scaled_columns": scaled,
+            "skipped_columns": skipped,
+        })
+
+    def extract_datetime(self, request, dataset_id=None):
+        """POST /datalab/extract-datetime/{dataset_id}/"""
+        column = request.data.get("column", "").strip()
+        features = request.data.get("features")
+
+        if not column:
+            return Response(
+                {"detail": "'column' is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(features, list) or not features:
+            return Response(
+                {"detail": f"'features' must be a non-empty list. Valid values: {list(DATETIME_FEATURES)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        invalid_feats = [f for f in features if f not in DATETIME_FEATURES]
+        if invalid_feats:
+            return Response(
+                {"detail": f"Invalid features: {invalid_feats}. Choose from: {list(DATETIME_FEATURES)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        if column not in df.columns:
+            return Response(
+                {"detail": f"Column '{column}' not found in dataset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        conflict = [f"{column}_{f}" for f in features if f"{column}_{f}" in df.columns]
+        if conflict:
+            return Response(
+                {"detail": f"Columns already exist: {conflict}. Rename or drop them first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        df, added_columns = df_extract_datetime_features(df, column, features)
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="EXTRACT_DATETIME",
+            details={"source_column": column, "added_columns": added_columns},
+        )
+
+        return Response({
+            "source_column": column,
+            "added_columns": added_columns,
+            "total_columns": len(df.columns),
+        })
+
+    def encode_columns(self, request, dataset_id=None):
+        """POST /datalab/encode-columns/{dataset_id}/"""
+        columns = request.data.get("columns")
+        strategy = request.data.get("strategy", "label")
+
+        if not isinstance(columns, list) or not columns:
+            return Response(
+                {"detail": "'columns' must be a non-empty list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if strategy not in ENCODE_STRATEGIES:
+            return Response(
+                {"detail": f"'strategy' must be one of: {list(ENCODE_STRATEGIES)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        unknown = [c for c in columns if c not in df.columns]
+        if unknown:
+            return Response(
+                {"detail": f"Columns not found in dataset: {unknown}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        df, result_info = df_encode_columns(df, columns, strategy=strategy)
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="ENCODE_COLUMNS",
+            details={"strategy": strategy, "columns": columns},
+        )
+
+        return Response({
+            "strategy": strategy,
+            "result": result_info,
+            "total_columns": len(df.columns),
+        })
+
+    def normalize_column_names(self, request, dataset_id=None):
+        """POST /datalab/normalize-column-names/{dataset_id}/"""
+        dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        if df is None:
+            return Response({"detail": _UNSUPPORTED_FORMAT}, status=status.HTTP_400_BAD_REQUEST)
+
+        if dataset.column_casts:
+            df = apply_stored_casts(df, dataset.column_casts)
+
+        df, rename_map = df_normalize_column_names(df)
+
+        if not rename_map:
+            return Response({
+                "detail": "All column names are already normalized.",
+                "columns": list(df.columns),
+            })
+
+        if not save_dataframe(df, dataset.file.path, dataset.file_format):
+            return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        invalidate_dataframe_cache(dataset.id)
+
+        # Migrate column_casts keys
+        if dataset.column_casts:
+            dataset.column_casts = {
+                rename_map.get(k, k): v for k, v in dataset.column_casts.items()
+            }
+        dataset.file_size = dataset.file.size
+        dataset.save(update_fields=["file_size", "column_casts", "updated_date"])
+
+        DatasetActivityLog.objects.create(
+            user=request.user,
+            dataset=dataset,
+            dataset_name_snap=dataset.file_name,
+            action="NORMALIZE_COLUMN_NAMES",
+            details={"renamed": rename_map},
+        )
+
+        return Response({
+            "renamed": rename_map,
+            "columns": list(df.columns),
         })
