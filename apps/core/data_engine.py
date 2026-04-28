@@ -844,6 +844,235 @@ def normalize_column_names(df):
     return df, rename_map
 
 
+CORRELATION_METHODS = ("pearson", "spearman", "kendall")
+
+
+def eda_correlation(df, columns, method="pearson"):
+    """
+    Compute a correlation matrix for the given numeric columns.
+    Returns a dict with the matrix, column list, and per-column descriptive stats.
+    """
+    sub = df[columns].select_dtypes(include="number")
+    corr = sub.corr(method=method).round(4)
+    matrix = []
+    cols = list(corr.columns)
+    for row_col in cols:
+        row = {}
+        for col_col in cols:
+            val = corr.at[row_col, col_col]
+            row[col_col] = None if pd.isna(val) else float(val)
+        matrix.append({"column": row_col, "values": row})
+    return {"columns": cols, "method": method, "matrix": matrix}
+
+
+def eda_distribution(df, columns, bins=20):
+    """
+    Compute histogram bin data, skewness, and kurtosis for numeric columns.
+    Returns per-column distribution stats.
+    """
+    result = {}
+    for col in columns:
+        series = df[col].dropna()
+        if series.empty:
+            result[col] = {"count": 0, "bins": [], "skewness": None, "kurtosis": None}
+            continue
+        counts, edges = np.histogram(series, bins=bins)
+        result[col] = {
+            "count": int(series.count()),
+            "mean": round(float(series.mean()), 4),
+            "std": round(float(series.std()), 4),
+            "min": round(float(series.min()), 4),
+            "max": round(float(series.max()), 4),
+            "skewness": round(float(series.skew()), 4),
+            "kurtosis": round(float(series.kurt()), 4),
+            "bins": [
+                {
+                    "range_start": round(float(edges[i]), 4),
+                    "range_end": round(float(edges[i + 1]), 4),
+                    "count": int(counts[i]),
+                }
+                for i in range(len(counts))
+            ],
+        }
+    return result
+
+
+def eda_value_counts(df, columns, top_n=20):
+    """
+    Frequency table for categorical (or any) columns.
+    Returns value, count, and percentage for the top N values per column.
+    """
+    result = {}
+    for col in columns:
+        total = len(df)
+        vc = df[col].value_counts(dropna=False).head(top_n)
+        result[col] = {
+            "total_rows": total,
+            "null_count": int(df[col].isna().sum()),
+            "unique_count": int(df[col].nunique()),
+            "top_values": [
+                {
+                    "value": (None if pd.isna(k) else (k.item() if isinstance(k, np.generic) else k)),
+                    "count": int(v),
+                    "pct": round(v / total * 100, 2) if total else 0.0,
+                }
+                for k, v in vc.items()
+            ],
+        }
+    return result
+
+
+def eda_crosstab(df, col_a, col_b, normalize=False):
+    """
+    Cross-tabulation of two categorical columns.
+    normalize=True returns row percentages instead of counts.
+    Returns index values, column values, and the 2D table.
+    """
+    ct = pd.crosstab(df[col_a], df[col_b], normalize="index" if normalize else False)
+    if normalize:
+        ct = ct.round(4)
+    index_vals = [str(v) for v in ct.index.tolist()]
+    col_vals = [str(v) for v in ct.columns.tolist()]
+    table = []
+    for idx_val, row in zip(index_vals, ct.values.tolist()):
+        table.append({
+            col_a: idx_val,
+            **{str(c): (round(float(v), 4) if normalize else int(v)) for c, v in zip(col_vals, row)},
+        })
+    return {
+        col_a: index_vals,
+        col_b: col_vals,
+        "normalize": normalize,
+        "table": table,
+    }
+
+
+def eda_outlier_summary(df, method="iqr", threshold=1.5):
+    """
+    Aggregated outlier report across all numeric columns. Read-only.
+    Returns per-column outlier stats plus a dataset-level summary.
+    """
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    total_rows = len(df)
+    per_column = {}
+    total_outlier_cells = 0
+
+    for col in numeric_cols:
+        valid = df[col].dropna()
+        if valid.empty:
+            per_column[col] = {"outlier_count": 0, "outlier_pct": 0.0, "lower_bound": None, "upper_bound": None}
+            continue
+        mask, lower, upper = _outlier_bounds(valid, method, threshold)
+        full_mask = pd.Series(False, index=df.index)
+        full_mask[valid.index] = mask.values
+        count = int(full_mask.sum())
+        total_outlier_cells += count
+        per_column[col] = {
+            "outlier_count": count,
+            "outlier_pct": round(count / total_rows * 100, 2) if total_rows else 0.0,
+            "lower_bound": round(lower, 4),
+            "upper_bound": round(upper, 4),
+            "mean": round(float(valid.mean()), 4),
+            "std": round(float(valid.std()), 4),
+        }
+
+    affected_cols = [c for c, v in per_column.items() if v["outlier_count"] > 0]
+    return {
+        "method": method,
+        "threshold": threshold,
+        "total_rows": total_rows,
+        "numeric_columns_checked": len(numeric_cols),
+        "columns_with_outliers": len(affected_cols),
+        "total_outlier_cells": total_outlier_cells,
+        "per_column": per_column,
+    }
+
+
+def eda_missing_heatmap(df):
+    """
+    Null pattern analysis: per-column null counts, rows with the most nulls,
+    and which column pairs tend to be null together (co-null correlation).
+    """
+    total_rows = len(df)
+    null_matrix = df.isnull()
+
+    per_column = {
+        col: {
+            "null_count": int(null_matrix[col].sum()),
+            "null_pct": round(null_matrix[col].sum() / total_rows * 100, 2) if total_rows else 0.0,
+        }
+        for col in df.columns
+    }
+
+    row_null_counts = null_matrix.sum(axis=1)
+    worst_rows = (
+        row_null_counts[row_null_counts > 0]
+        .sort_values(ascending=False)
+        .head(10)
+    )
+    worst_rows_list = [
+        {"row_index": int(idx), "null_count": int(cnt)}
+        for idx, cnt in worst_rows.items()
+    ]
+
+    null_cols = [c for c in df.columns if null_matrix[c].any()]
+    co_null = {}
+    if len(null_cols) >= 2:
+        co_null_corr = null_matrix[null_cols].corr().round(3)
+        for col_a in null_cols:
+            for col_b in null_cols:
+                if col_a >= col_b:
+                    continue
+                val = co_null_corr.at[col_a, col_b]
+                if not pd.isna(val) and abs(val) >= 0.5:
+                    co_null[f"{col_a} × {col_b}"] = float(val)
+
+    return {
+        "total_rows": total_rows,
+        "total_columns": len(df.columns),
+        "columns_with_nulls": len(null_cols),
+        "per_column": per_column,
+        "worst_rows": worst_rows_list,
+        "co_null_pairs": co_null,
+    }
+
+
+def eda_pairwise(df, col_x, col_y, sample=500):
+    """
+    Return scatter-plot-ready x/y pairs for two columns, optionally sampled.
+    Only includes rows where both columns are non-null.
+    """
+    valid = df[[col_x, col_y]].dropna()
+    if len(valid) > sample:
+        valid = valid.sample(n=sample, random_state=42)
+
+    def _serialize(v):
+        if pd.isna(v):
+            return None
+        return v.item() if isinstance(v, np.generic) else v
+
+    points = [
+        {"x": _serialize(row[col_x]), "y": _serialize(row[col_y])}
+        for _, row in valid.iterrows()
+    ]
+
+    corr_val = None
+    if len(valid) >= 3:
+        try:
+            corr_val = round(float(valid[col_x].corr(valid[col_y])), 4)
+        except Exception:
+            pass
+
+    return {
+        "col_x": col_x,
+        "col_y": col_y,
+        "total_valid_rows": int(df[[col_x, col_y]].dropna().__len__()),
+        "sampled": len(points),
+        "pearson_r": corr_val,
+        "points": points,
+    }
+
+
 def generate_summary_stats(df):
     """
     Per-column summary statistics suitable for JSON serialization.

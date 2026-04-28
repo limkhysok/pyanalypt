@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     "apps.datasets",
     "apps.datalab",
     "apps.datasetframe",
+    "apps.eda",
 ]
 
 MIDDLEWARE = [

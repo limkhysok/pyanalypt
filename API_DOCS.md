@@ -2637,6 +2637,275 @@ Rename all column headers to `lowercase_snake_case` — removes spaces, special 
 
 ---
 
+## 📊 Exploratory Data Analysis (EDA)
+
+All EDA endpoints are **read-only GET requests** — they never mutate the dataset file or write activity logs. Stored dtype casts (`column_casts`) are applied before analysis, so results reflect the user's intended column types.
+
+**Base path**: `GET /api/v1/eda/`
+
+---
+
+### 1. Correlation Matrix
+
+Compute pairwise correlation coefficients between numeric columns.
+
+- **Endpoint**: `GET /eda/correlation/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `columns` | list | all numeric | Column names to include (repeatable: `?columns=a&columns=b`) |
+| `method` | string | `pearson` | Correlation method: `pearson`, `spearman`, `kendall` |
+
+#### Response (200 OK)
+```json
+{
+  "columns": ["age", "salary", "score"],
+  "method": "pearson",
+  "matrix": [
+    {"column": "age",    "values": {"age": 1.0, "salary": 0.7412, "score": -0.231}},
+    {"column": "salary", "values": {"age": 0.7412, "salary": 1.0, "score": 0.182}},
+    {"column": "score",  "values": {"age": -0.231, "salary": 0.182, "score": 1.0}}
+  ]
+}
+```
+
+> If no `columns` are provided, all numeric columns in the dataset are used automatically.
+> Non-numeric columns listed in `columns` are rejected with a 400 error.
+
+---
+
+### 2. Distribution
+
+Histogram bin data, skewness, and kurtosis for numeric columns.
+
+- **Endpoint**: `GET /eda/distribution/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `columns` | list | all numeric | Column names (repeatable) |
+| `bins` | integer | `20` | Number of histogram bins (1–100) |
+
+#### Response (200 OK)
+```json
+{
+  "salary": {
+    "count": 950,
+    "mean": 55200.4,
+    "std": 12300.1,
+    "min": 20000.0,
+    "max": 110000.0,
+    "skewness": 0.8741,
+    "kurtosis": 1.2305,
+    "bins": [
+      {"range_start": 20000.0, "range_end": 23000.0, "count": 12},
+      {"range_start": 23000.0, "range_end": 26000.0, "count": 35}
+    ]
+  }
+}
+```
+
+> Skewness > 1 (or < −1) indicates a significantly skewed distribution.
+> Kurtosis > 3 indicates heavy tails; < 3 indicates thin tails compared to normal.
+
+---
+
+### 3. Value Counts
+
+Frequency table showing how often each value appears in a column.
+
+- **Endpoint**: `GET /eda/value-counts/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `columns` | list | all columns | Column names (repeatable) |
+| `top_n` | integer | `20` | Maximum values to return per column (1–100) |
+
+#### Response (200 OK)
+```json
+{
+  "country": {
+    "total_rows": 1000,
+    "null_count": 5,
+    "unique_count": 42,
+    "top_values": [
+      {"value": "Cambodia", "count": 340, "pct": 34.0},
+      {"value": "Thailand", "count": 280, "pct": 28.0},
+      {"value": null,       "count": 5,   "pct": 0.5}
+    ]
+  }
+}
+```
+
+> `null` values are included in `top_values` so you can see the null distribution alongside valid values.
+> Works for any column type — numeric, string, datetime, boolean.
+
+---
+
+### 4. Cross-tabulation
+
+Two-way frequency table between two categorical columns.
+
+- **Endpoint**: `GET /eda/crosstab/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `col_a` | string | *(required)* | Row-axis column |
+| `col_b` | string | *(required)* | Column-axis column |
+| `normalize` | boolean | `false` | Return row percentages instead of counts |
+
+#### Response (200 OK) — counts
+```json
+{
+  "gender": ["F", "M"],
+  "department": ["Engineering", "Marketing", "Sales"],
+  "normalize": false,
+  "table": [
+    {"gender": "F", "Engineering": 45, "Marketing": 78, "Sales": 32},
+    {"gender": "M", "Engineering": 90, "Marketing": 41, "Sales": 67}
+  ]
+}
+```
+
+#### Response (200 OK) — normalized (`normalize=true`)
+```json
+{
+  "normalize": true,
+  "table": [
+    {"gender": "F", "Engineering": 0.2903, "Marketing": 0.5032, "Sales": 0.2065}
+  ]
+}
+```
+
+> Columns with more than **50 unique values** are rejected with a 400 error — use `value-counts` to explore high-cardinality columns instead.
+> `normalize=true` returns row-proportions (each row sums to 1.0).
+
+---
+
+### 5. Outlier Summary
+
+Read-only aggregated outlier report across all numeric columns.
+
+- **Endpoint**: `GET /eda/outlier-summary/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `method` | string | `iqr` | Detection method: `iqr` or `zscore` |
+| `threshold` | float | `1.5` | IQR multiplier or Z-score cutoff |
+
+#### Response (200 OK)
+```json
+{
+  "method": "iqr",
+  "threshold": 1.5,
+  "total_rows": 1000,
+  "numeric_columns_checked": 5,
+  "columns_with_outliers": 2,
+  "total_outlier_cells": 34,
+  "per_column": {
+    "salary": {
+      "outlier_count": 22,
+      "outlier_pct": 2.2,
+      "lower_bound": 18000.0,
+      "upper_bound": 95000.0,
+      "mean": 55200.4,
+      "std": 12300.1
+    },
+    "age": {
+      "outlier_count": 0,
+      "outlier_pct": 0.0,
+      "lower_bound": 18.0,
+      "upper_bound": 72.0,
+      "mean": 35.4,
+      "std": 11.2
+    }
+  }
+}
+```
+
+> This endpoint is read-only — use datalab endpoints (`/datalab/trim-outliers/`, `/datalab/cap-outliers/`, etc.) to actually treat outliers.
+
+---
+
+### 6. Missing Value Heatmap
+
+Null pattern analysis: per-column null rates, worst rows, and co-null pairs.
+
+- **Endpoint**: `GET /eda/missing-heatmap/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**: *(none)*
+
+#### Response (200 OK)
+```json
+{
+  "total_rows": 1000,
+  "total_columns": 8,
+  "columns_with_nulls": 3,
+  "per_column": {
+    "salary":  {"null_count": 12, "null_pct": 1.2},
+    "age":     {"null_count": 0,  "null_pct": 0.0},
+    "address": {"null_count": 45, "null_pct": 4.5}
+  },
+  "worst_rows": [
+    {"row_index": 142, "null_count": 3},
+    {"row_index": 567, "null_count": 2}
+  ],
+  "co_null_pairs": {
+    "salary × address": 0.712
+  }
+}
+```
+
+> `worst_rows` — up to 10 rows with the most null values, sorted descending. Use row_index with the `update-cell` endpoint to patch specific cells.
+> `co_null_pairs` — column pairs with co-null correlation ≥ 0.5 (i.e., when one is null, the other tends to be too). Only shown for pairs with |r| ≥ 0.5.
+
+---
+
+### 7. Pairwise Scatter
+
+X/Y point pairs for scatter plot visualization between two columns.
+
+- **Endpoint**: `GET /eda/pairwise/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `col_x` | string | *(required)* | X-axis column |
+| `col_y` | string | *(required)* | Y-axis column |
+| `sample` | integer | `500` | Max points to return (1–5000) |
+
+#### Response (200 OK)
+```json
+{
+  "col_x": "age",
+  "col_y": "salary",
+  "total_valid_rows": 988,
+  "sampled": 500,
+  "pearson_r": 0.7412,
+  "points": [
+    {"x": 28, "y": 45000},
+    {"x": 35, "y": 62000}
+  ]
+}
+```
+
+> Only rows where **both** columns are non-null are included.
+> When `total_valid_rows > sample`, the returned `points` are a random sample (seed=42 for reproducibility).
+> `pearson_r` is computed on the **full** valid dataset (not the sample), so it reflects the true correlation even for large datasets.
+> Works for any two columns — numeric, datetime, or mixed — but `pearson_r` is only meaningful for two numeric columns.
+
+---
+
 ### Standard Error Format
 ```json
 {
