@@ -1763,7 +1763,7 @@ Scan one or more numeric columns for outliers using IQR or Z-Score and return pe
 |---|---|---|---|
 | `columns` | string | — | **Required.** Comma-separated list of numeric column names to inspect |
 | `method` | string | `"iqr"` | Detection method: `"iqr"` or `"zscore"` |
-| `threshold` | number | `1.5` (IQR) / `3.0` (Z-Score) | Sensitivity. Lower = more outliers flagged |
+| `threshold` | number | `1.5` (IQR) / `3.0` (Z-Score) | Sensitivity (0–10). Lower = more outliers flagged |
 
 **Method reference:**
 
@@ -1852,7 +1852,7 @@ Delete rows where any of the target columns contains an outlier. Use this when y
 |---|---|---|---|---|
 | `columns` | array of strings | Yes | — | Numeric columns to check for outliers |
 | `method` | string | No | `"iqr"` | `"iqr"` or `"zscore"` |
-| `threshold` | number | No | `1.5` | Detection sensitivity (see Detect Outliers) |
+| `threshold` | number | No | `1.5` | Detection sensitivity (0–10, see Detect Outliers) |
 
 ```json
 {
@@ -1908,7 +1908,7 @@ Replace outlier values in-place with the column's mean, median, or mode. The row
 |---|---|---|---|---|
 | `columns` | array of strings | Yes | — | Numeric columns to impute |
 | `method` | string | No | `"iqr"` | `"iqr"` or `"zscore"` |
-| `threshold` | number | No | `1.5` | Detection sensitivity |
+| `threshold` | number | No | `1.5` | Detection sensitivity (0–10) |
 | `strategy` | string | No | `"median"` | Replacement value: `"mean"`, `"median"`, or `"mode"` |
 
 **Replace negative prices with the column median:**
@@ -2723,7 +2723,7 @@ Frequency table showing how often each value appears in a column.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `columns` | list | all columns | Column names (repeatable) |
+| `columns` | list | first 50 columns | Column names (repeatable). Omitting on wide datasets returns the first 50 columns only. |
 | `top_n` | integer | `20` | Maximum values to return per column (1–100) |
 
 #### Response (200 OK)
@@ -2759,7 +2759,7 @@ Two-way frequency table between two categorical columns.
 |-----------|------|---------|-------------|
 | `col_a` | string | *(required)* | Row-axis column |
 | `col_b` | string | *(required)* | Column-axis column |
-| `normalize` | boolean | `false` | Return row percentages instead of counts |
+| `normalize` | `"true"` / `"false"` | `"false"` | Return row percentages instead of counts |
 
 #### Response (200 OK) — counts
 ```json
@@ -2800,7 +2800,7 @@ Read-only aggregated outlier report across all numeric columns.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `method` | string | `iqr` | Detection method: `iqr` or `zscore` |
-| `threshold` | float | `1.5` | IQR multiplier or Z-score cutoff |
+| `threshold` | float | `1.5` | IQR multiplier or Z-score cutoff (max: `10`) |
 
 #### Response (200 OK)
 ```json
@@ -2844,6 +2844,8 @@ Null pattern analysis: per-column null rates, worst rows, and co-null pairs.
 - **Auth Required**: Yes
 - **Query Parameters**: *(none)*
 
+> For datasets with more than **50,000 rows**, the analysis is run on a random 50,000-row sample (seed=42). The `total_rows` field in the response reflects the sampled count, not the full dataset size.
+
 #### Response (200 OK)
 ```json
 {
@@ -2880,8 +2882,8 @@ X/Y point pairs for scatter plot visualization between two columns.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `col_x` | string | *(required)* | X-axis column |
-| `col_y` | string | *(required)* | Y-axis column |
+| `col_x` | string | *(required)* | X-axis column — **must be numeric** |
+| `col_y` | string | *(required)* | Y-axis column — **must be numeric** |
 | `sample` | integer | `500` | Max points to return (1–5000) |
 
 #### Response (200 OK)
@@ -2899,10 +2901,10 @@ X/Y point pairs for scatter plot visualization between two columns.
 }
 ```
 
+> Both `col_x` and `col_y` must be numeric columns — non-numeric columns are rejected with a 400 error.
 > Only rows where **both** columns are non-null are included.
 > When `total_valid_rows > sample`, the returned `points` are a random sample (seed=42 for reproducibility).
 > `pearson_r` is computed on the **full** valid dataset (not the sample), so it reflects the true correlation even for large datasets.
-> Works for any two columns — numeric, datetime, or mixed — but `pearson_r` is only meaningful for two numeric columns.
 
 ---
 
@@ -2923,4 +2925,5 @@ X/Y point pairs for scatter plot visualization between two columns.
 | 401 | Unauthorized | Invalid or expired token |
 | 403 | Forbidden | Permissions mapping error |
 | 404 | Not Found | Resource not found |
+| 500 | Internal Server Error | Dataset file could not be loaded, or an analysis computation failed |
 ---

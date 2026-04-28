@@ -1041,9 +1041,19 @@ def eda_pairwise(df, col_x, col_y, sample=500):
     """
     Return scatter-plot-ready x/y pairs for two columns, optionally sampled.
     Only includes rows where both columns are non-null.
+    pearson_r is always computed on the full valid set, before any sampling.
     """
     valid = df[[col_x, col_y]].dropna()
-    if len(valid) > sample:
+    total_valid = len(valid)
+
+    corr_val = None
+    if total_valid >= 3:
+        try:
+            corr_val = round(float(valid[col_x].corr(valid[col_y])), 4)
+        except Exception:
+            pass
+
+    if total_valid > sample:
         valid = valid.sample(n=sample, random_state=42)
 
     def _serialize(v):
@@ -1056,17 +1066,10 @@ def eda_pairwise(df, col_x, col_y, sample=500):
         for _, row in valid.iterrows()
     ]
 
-    corr_val = None
-    if len(valid) >= 3:
-        try:
-            corr_val = round(float(valid[col_x].corr(valid[col_y])), 4)
-        except Exception:
-            pass
-
     return {
         "col_x": col_x,
         "col_y": col_y,
-        "total_valid_rows": int(df[[col_x, col_y]].dropna().__len__()),
+        "total_valid_rows": total_valid,
         "sampled": len(points),
         "pearson_r": corr_val,
         "points": points,

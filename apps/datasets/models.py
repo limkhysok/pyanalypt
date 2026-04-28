@@ -95,6 +95,14 @@ class DatasetActivityLog(models.Model):
         ("IMPUTE_OUTLIERS", "Impute Outliers"),
         ("CAP_OUTLIERS", "Cap Outliers"),
         ("TRANSFORM_COLUMN", "Transform Column"),
+        ("DROP_COLUMNS", "Drop Columns"),
+        ("ADD_COLUMN", "Add Column"),
+        ("FILTER_ROWS", "Filter Rows"),
+        ("CLEAN_STRING", "Clean String"),
+        ("SCALE_COLUMNS", "Scale Columns"),
+        ("EXTRACT_DATETIME", "Extract Datetime"),
+        ("ENCODE_COLUMNS", "Encode Columns"),
+        ("NORMALIZE_COLUMN_NAMES", "Normalize Column Names"),
     ]
 
     user = models.ForeignKey(
@@ -113,7 +121,7 @@ class DatasetActivityLog(models.Model):
     dataset_name_snap = models.CharField(
         max_length=255, help_text="Snapshot of the file name at the time of log."
     )
-    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    action = models.CharField(max_length=30, choices=ACTION_CHOICES)
     details = models.JSONField(default=dict, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
 

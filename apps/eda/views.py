@@ -1,4 +1,6 @@
-from rest_framework import permissions, viewsets
+import pandas as pd
+
+from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -24,6 +26,9 @@ _MAX_SAMPLE = 5000
 _DEFAULT_TOP_N = 20
 _MAX_TOP_N = 100
 _MAX_CROSSTAB_CARDINALITY = 50
+_MAX_OUTLIER_THRESHOLD = 10
+_MAX_VALUE_COUNTS_COLS = 50
+_MISSING_HEATMAP_ROW_LIMIT = 50_000
 
 
 def _load_df(dataset_id, request):
@@ -34,11 +39,11 @@ def _load_df(dataset_id, request):
     try:
         dataset = Dataset.objects.get(pk=dataset_id, user=request.user)
     except Dataset.DoesNotExist:
-        return Response({"error": "Dataset not found."}, status=404), None
+        return Response({"detail": "Dataset not found."}, status=status.HTTP_404_NOT_FOUND), None
 
     df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
     if df is None:
-        return Response({"error": "Could not load dataset file."}, status=500), None
+        return Response({"detail": "Could not load dataset file."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR), None
 
     if dataset.column_casts:
         df = apply_stored_casts(df, dataset.column_casts)
@@ -56,11 +61,10 @@ def _parse_columns_param(raw, df, require_numeric=False):
 
     missing = [c for c in raw if c not in df.columns]
     if missing:
-        return f"Columns not found: {missing}", None
+        return f"Columns not found in dataset: {missing}", None
 
     if require_numeric:
-        non_numeric = [c for c in raw if not hasattr(df[c], "dtype") or
-                       df[c].dtype.kind not in "iufcb"]
+        non_numeric = [c for c in raw if not pd.api.types.is_numeric_dtype(df[c])]
         if non_numeric:
             return f"Columns must be numeric: {non_numeric}", None
 
@@ -70,7 +74,7 @@ def _parse_columns_param(raw, df, require_numeric=False):
 class EDAViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
-    @action(detail=False, methods=["get"], url_path="(?P<dataset_id>[^/.]+)/correlation")
+    @action(detail=False, methods=["get"])
     def correlation(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -82,23 +86,26 @@ class EDAViewSet(viewsets.ViewSet):
 
         if method not in CORRELATION_METHODS:
             return Response(
-                {"error": f"method must be one of {CORRELATION_METHODS}."},
-                status=400,
+                {"detail": f"'method' must be one of: {sorted(CORRELATION_METHODS)}."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if columns_raw:
             col_err, columns = _parse_columns_param(columns_raw, df, require_numeric=True)
             if col_err:
-                return Response({"error": col_err}, status=400)
+                return Response({"detail": col_err}, status=status.HTTP_400_BAD_REQUEST)
         else:
             columns = df.select_dtypes(include="number").columns.tolist()
             if not columns:
-                return Response({"error": "No numeric columns found."}, status=400)
+                return Response({"detail": "No numeric columns found."}, status=status.HTTP_400_BAD_REQUEST)
 
-        data = eda_correlation(df, columns, method=method)
+        try:
+            data = eda_correlation(df, columns, method=method)
+        except Exception:
+            return Response({"detail": "Failed to compute correlation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"], url_path="(?P<dataset_id>[^/.]+)/distribution")
+    @action(detail=False, methods=["get"])
     def distribution(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -109,24 +116,30 @@ class EDAViewSet(viewsets.ViewSet):
         try:
             bins = int(request.query_params.get("bins", _DEFAULT_BINS))
         except (ValueError, TypeError):
-            return Response({"error": "bins must be an integer."}, status=400)
+            return Response({"detail": "'bins' must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
 
         if not (1 <= bins <= _MAX_BINS):
-            return Response({"error": f"bins must be between 1 and {_MAX_BINS}."}, status=400)
+            return Response(
+                {"detail": f"'bins' must be between 1 and {_MAX_BINS}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if columns_raw:
             col_err, columns = _parse_columns_param(columns_raw, df, require_numeric=True)
             if col_err:
-                return Response({"error": col_err}, status=400)
+                return Response({"detail": col_err}, status=status.HTTP_400_BAD_REQUEST)
         else:
             columns = df.select_dtypes(include="number").columns.tolist()
             if not columns:
-                return Response({"error": "No numeric columns found."}, status=400)
+                return Response({"detail": "No numeric columns found."}, status=status.HTTP_400_BAD_REQUEST)
 
-        data = eda_distribution(df, columns, bins=bins)
+        try:
+            data = eda_distribution(df, columns, bins=bins)
+        except Exception:
+            return Response({"detail": "Failed to compute distribution."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"], url_path="(?P<dataset_id>[^/.]+)/value-counts")
+    @action(detail=False, methods=["get"])
     def value_counts(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -137,22 +150,28 @@ class EDAViewSet(viewsets.ViewSet):
         try:
             top_n = int(request.query_params.get("top_n", _DEFAULT_TOP_N))
         except (ValueError, TypeError):
-            return Response({"error": "top_n must be an integer."}, status=400)
+            return Response({"detail": "'top_n' must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
 
         if not (1 <= top_n <= _MAX_TOP_N):
-            return Response({"error": f"top_n must be between 1 and {_MAX_TOP_N}."}, status=400)
+            return Response(
+                {"detail": f"'top_n' must be between 1 and {_MAX_TOP_N}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if columns_raw:
             col_err, columns = _parse_columns_param(columns_raw, df)
             if col_err:
-                return Response({"error": col_err}, status=400)
+                return Response({"detail": col_err}, status=status.HTTP_400_BAD_REQUEST)
         else:
-            columns = df.columns.tolist()
+            columns = df.columns.tolist()[:_MAX_VALUE_COUNTS_COLS]
 
-        data = eda_value_counts(df, columns, top_n=top_n)
+        try:
+            data = eda_value_counts(df, columns, top_n=top_n)
+        except Exception:
+            return Response({"detail": "Failed to compute value counts."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"], url_path="(?P<dataset_id>[^/.]+)/crosstab")
+    @action(detail=False, methods=["get"])
     def crosstab(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -163,31 +182,38 @@ class EDAViewSet(viewsets.ViewSet):
         col_b = request.query_params.get("col_b")
 
         if not col_a or not col_b:
-            return Response({"error": "col_a and col_b are required."}, status=400)
+            return Response(
+                {"detail": "'col_a' and 'col_b' are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        missing = [c for c in (col_a, col_b) if c not in df.columns]
-        if missing:
-            return Response({"error": f"Columns not found: {missing}"}, status=400)
+        col_err, _ = _parse_columns_param([col_a, col_b], df)
+        if col_err:
+            return Response({"detail": col_err}, status=status.HTTP_400_BAD_REQUEST)
 
         for col_name, col in ((col_a, df[col_a]), (col_b, df[col_b])):
-            if col.nunique() > _MAX_CROSSTAB_CARDINALITY:
+            cardinality = col.nunique()
+            if cardinality > _MAX_CROSSTAB_CARDINALITY:
                 return Response(
                     {
-                        "error": (
-                            f"'{col_name}' has {col.nunique()} unique values — "
-                            f"crosstab is limited to {_MAX_CROSSTAB_CARDINALITY}."
+                        "detail": (
+                            f"'{col_name}' has {cardinality} unique values — "
+                            f"crosstab is limited to {_MAX_CROSSTAB_CARDINALITY}. "
+                            f"Use value-counts to explore high-cardinality columns."
                         )
                     },
-                    status=400,
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        normalize_raw = request.query_params.get("normalize", "false").lower()
-        normalize = normalize_raw in ("true", "1", "yes")
+        normalize = request.query_params.get("normalize", "false").lower() == "true"
 
-        data = eda_crosstab(df, col_a, col_b, normalize=normalize)
+        try:
+            data = eda_crosstab(df, col_a, col_b, normalize=normalize)
+        except Exception:
+            return Response({"detail": "Failed to compute crosstab."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"], url_path="(?P<dataset_id>[^/.]+)/outlier-summary")
+    @action(detail=False, methods=["get"])
     def outlier_summary(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -197,32 +223,53 @@ class EDAViewSet(viewsets.ViewSet):
         method = request.query_params.get("method", "iqr")
         if method not in OUTLIER_METHODS:
             return Response(
-                {"error": f"method must be one of {OUTLIER_METHODS}."},
-                status=400,
+                {"detail": f"'method' must be one of: {sorted(OUTLIER_METHODS)}."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
             threshold = float(request.query_params.get("threshold", 1.5))
         except (ValueError, TypeError):
-            return Response({"error": "threshold must be a number."}, status=400)
+            return Response(
+                {"detail": "'threshold' must be a number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if threshold <= 0:
-            return Response({"error": "threshold must be > 0."}, status=400)
+            return Response(
+                {"detail": "'threshold' must be > 0."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        data = eda_outlier_summary(df, method=method, threshold=threshold)
+        if threshold > _MAX_OUTLIER_THRESHOLD:
+            return Response(
+                {"detail": f"'threshold' must be ≤ {_MAX_OUTLIER_THRESHOLD}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            data = eda_outlier_summary(df, method=method, threshold=threshold)
+        except Exception:
+            return Response({"detail": "Failed to compute outlier summary."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"], url_path="(?P<dataset_id>[^/.]+)/missing-heatmap")
+    @action(detail=False, methods=["get"])
     def missing_heatmap(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
             return err
         df, _ = result
 
-        data = eda_missing_heatmap(df)
+        if len(df) > _MISSING_HEATMAP_ROW_LIMIT:
+            df = df.sample(n=_MISSING_HEATMAP_ROW_LIMIT, random_state=42)
+
+        try:
+            data = eda_missing_heatmap(df)
+        except Exception:
+            return Response({"detail": "Failed to compute missing heatmap."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"], url_path="(?P<dataset_id>[^/.]+)/pairwise")
+    @action(detail=False, methods=["get"])
     def pairwise(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -233,19 +280,31 @@ class EDAViewSet(viewsets.ViewSet):
         col_y = request.query_params.get("col_y")
 
         if not col_x or not col_y:
-            return Response({"error": "col_x and col_y are required."}, status=400)
+            return Response(
+                {"detail": "'col_x' and 'col_y' are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        missing = [c for c in (col_x, col_y) if c not in df.columns]
-        if missing:
-            return Response({"error": f"Columns not found: {missing}"}, status=400)
+        col_err, _ = _parse_columns_param([col_x, col_y], df, require_numeric=True)
+        if col_err:
+            return Response({"detail": col_err}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             sample = int(request.query_params.get("sample", _DEFAULT_SAMPLE))
         except (ValueError, TypeError):
-            return Response({"error": "sample must be an integer."}, status=400)
+            return Response(
+                {"detail": "'sample' must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not (1 <= sample <= _MAX_SAMPLE):
-            return Response({"error": f"sample must be between 1 and {_MAX_SAMPLE}."}, status=400)
+            return Response(
+                {"detail": f"'sample' must be between 1 and {_MAX_SAMPLE}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        data = eda_pairwise(df, col_x, col_y, sample=sample)
+        try:
+            data = eda_pairwise(df, col_x, col_y, sample=sample)
+        except Exception:
+            return Response({"detail": "Failed to compute pairwise scatter."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
