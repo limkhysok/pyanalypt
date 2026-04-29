@@ -9,7 +9,6 @@ from django.shortcuts import get_object_or_404
 from apps.datasets.models import Dataset, DatasetActivityLog
 from apps.core.data_engine import (
     get_cached_dataframe,
-    invalidate_dataframe_cache,
     save_dataframe,
     apply_cast,
     validate_cast,
@@ -56,6 +55,40 @@ _SAVE_FAILED = "Failed to save updated dataset."
 _INVALID_THRESHOLD = "'threshold' must be a positive number."
 _MAX_PREVIEW_LIMIT = 10_000
 _MAX_OUTLIER_THRESHOLD = 10
+
+
+def _commit_mutation(df, dataset, user, action, details, extra_save_fields=None):
+    """
+    Persist df → disk, update dataset metadata, pre-warm versioned cache, write activity log.
+    Must be called inside transaction.atomic().
+    Raises RuntimeError on file-write failure so the surrounding transaction rolls back.
+    """
+    if not save_dataframe(df, dataset.file.path, dataset.file_format):
+        raise RuntimeError(_SAVE_FAILED)
+
+    dataset.file_size = dataset.file.size
+    fields = ["file_size", "updated_date"] + (extra_save_fields or [])
+    dataset.save(update_fields=fields)
+
+    import io
+    from django.core.cache import cache
+    from django.conf import settings
+    from apps.core.data_engine import _df_cache_key
+    try:
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=True)
+        key = _df_cache_key(dataset.id, dataset.updated_date)
+        cache.set(key, buf.getvalue(), timeout=settings.DATAFRAME_CACHE_TTL)
+    except Exception as e:
+        logger.warning("df cache pre-warm failed for dataset %s: %s", dataset.id, e)
+
+    DatasetActivityLog.objects.create(
+        user=user,
+        dataset=dataset,
+        dataset_name_snap=dataset.file_name,
+        action=action,
+        details=details,
+    )
 
 
 def _validate_casts(df, casts):
@@ -235,7 +268,7 @@ def _load_and_lock(dataset_id, user):
     Returns (error_response, None, None) on failure or (None, dataset, df) on success.
     """
     dataset = get_object_or_404(Dataset.objects.select_for_update(), pk=dataset_id, user=user)
-    df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+    df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format, version=dataset.updated_date)
     if df is None:
         return Response({"detail": _LOAD_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR), None, None
     if dataset.column_casts:
@@ -280,7 +313,7 @@ def _resolve_formula_context(request, dataset_id, target_field="target", lock=Fa
 
     qs = Dataset.objects.select_for_update() if lock else Dataset.objects
     dataset = get_object_or_404(qs, pk=dataset_id, user=request.user)
-    df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+    df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format, version=dataset.updated_date)
     if df is None:
         return Response({"detail": _LOAD_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR), None
 
@@ -334,7 +367,7 @@ class DatalabViewSet(viewsets.ViewSet):
             )
 
         dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
-        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format, version=dataset.updated_date)
         if df is None:
             return Response({"detail": _LOAD_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -362,7 +395,7 @@ class DatalabViewSet(viewsets.ViewSet):
     def inspect(self, request, dataset_id=None):
         """GET /datalab/inspect/{dataset_id}/"""
         dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
-        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format, version=dataset.updated_date)
         if df is None:
             return Response({"detail": _LOAD_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -393,7 +426,7 @@ class DatalabViewSet(viewsets.ViewSet):
     def describe(self, request, dataset_id=None):
         """GET /datalab/describe/{dataset_id}/"""
         dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
-        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format, version=dataset.updated_date)
         if df is None:
             return Response({"detail": _LOAD_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -426,7 +459,7 @@ class DatalabViewSet(viewsets.ViewSet):
             )
 
         dataset = get_object_or_404(Dataset, pk=dataset_id, user=request.user)
-        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+        df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format, version=dataset.updated_date)
         if df is None:
             return Response({"detail": _LOAD_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         if dataset.column_casts:
@@ -510,19 +543,12 @@ class DatalabViewSet(viewsets.ViewSet):
 
             successful = {r["column"]: casts[r["column"]] for r in cast_results if r["status"] == "ok"}
             if successful:
-                if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                    return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                invalidate_dataframe_cache(dataset.id)
                 dataset.column_casts = {**(dataset.column_casts or {}), **successful}
-                dataset.file_size = dataset.file.size
-                dataset.save(update_fields=["column_casts", "file_size", "updated_date"])
-                DatasetActivityLog.objects.create(
-                    user=request.user,
-                    dataset=dataset,
-                    dataset_name_snap=dataset.file_name,
-                    action="CAST",
-                    details={"columns": successful},
-                )
+                try:
+                    _commit_mutation(df, dataset, request.user, "CAST", {"columns": successful},
+                                     extra_save_fields=["column_casts"])
+                except RuntimeError as exc:
+                    return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
             return Response({"updated_columns": hard_errors + cast_results})
 
@@ -564,19 +590,13 @@ class DatalabViewSet(viewsets.ViewSet):
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="UPDATE_CELL",
-                details={"row_index": row_index, "column": column, "value": coerced.isoformat() if hasattr(coerced, "isoformat") else str(coerced)},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "UPDATE_CELL", {
+                    "row_index": row_index, "column": column,
+                    "value": coerced.isoformat() if hasattr(coerced, "isoformat") else str(coerced),
+                })
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         serialized = coerced.isoformat() if hasattr(coerced, "isoformat") else coerced
         return Response({"row_index": row_index, "column": column, "value": serialized})
@@ -615,23 +635,16 @@ class DatalabViewSet(viewsets.ViewSet):
 
             df = df_rename_column(df, old_name, new_name)
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            fields_to_update = ["file_size", "updated_date"]
+            extra = []
             if dataset.column_casts and old_name in dataset.column_casts:
                 dataset.column_casts[new_name] = dataset.column_casts.pop(old_name)
-                fields_to_update.append("column_casts")
-            dataset.save(update_fields=fields_to_update)
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="RENAME_COLUMN",
-                details={"old_name": old_name, "new_name": new_name},
-            )
+                extra = ["column_casts"]
+            try:
+                _commit_mutation(df, dataset, request.user, "RENAME_COLUMN",
+                                 {"old_name": old_name, "new_name": new_name},
+                                 extra_save_fields=extra)
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"old_name": old_name, "new_name": new_name, "columns": list(df.columns)})
 
@@ -666,19 +679,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "detail": "No duplicate rows found.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="DROP_DUPLICATES",
-                details={"mode": mode, "rows_dropped": rows_dropped},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "DROP_DUPLICATES",
+                                 {"mode": mode, "rows_dropped": rows_dropped})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"mode": mode, "rows_before": rows_before, "rows_after": len(df), "rows_dropped": rows_dropped})
 
@@ -721,19 +726,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "detail": "No matching values found.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="REPLACE_VALUES",
-                details={"cells_replaced": cells_replaced, "columns": columns},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "REPLACE_VALUES",
+                                 {"cells_replaced": cells_replaced, "columns": columns})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({
             "replacements": replacements,
@@ -768,19 +765,10 @@ class DatalabViewSet(viewsets.ViewSet):
             if dropped_count == 0:
                 return Response({"axis": axis, **stats, "detail": "No null rows/columns matched the criteria."})
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="DROP_NULLS",
-                details={"axis": axis, **stats},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "DROP_NULLS", {"axis": axis, **stats})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"axis": axis, **stats})
 
@@ -804,19 +792,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "detail": f"No null values in '{target}' with complete operand data.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="FILL_DERIVED",
-                details={"target": target, "formula": formula, "cells_filled": cells_filled},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "FILL_DERIVED",
+                                 {"target": target, "formula": formula, "cells_filled": cells_filled})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({
             "target": target, "formula": formula,
@@ -844,19 +824,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "detail": "No inconsistent rows found within the given tolerance.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="FIX_FORMULA",
-                details={"target": target, "formula": formula, "cells_fixed": cells_fixed},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "FIX_FORMULA",
+                                 {"target": target, "formula": formula, "cells_fixed": cells_fixed})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({
             "target": target, "formula": formula,
@@ -900,19 +872,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "detail": "No null values found to fill.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="FILL_NULLS",
-                details={"strategy": strategy, "cells_filled": cells_filled},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "FILL_NULLS",
+                                 {"strategy": strategy, "cells_filled": cells_filled})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"strategy": strategy, "cells_filled": cells_filled, "skipped_columns": skipped_columns})
 
@@ -958,19 +922,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "rows_dropped": 0, "detail": "No outlier rows found.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="TRIM_OUTLIERS",
-                details={"method": method, "threshold": threshold, "rows_dropped": rows_dropped},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "TRIM_OUTLIERS",
+                                 {"method": method, "threshold": threshold, "rows_dropped": rows_dropped})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({
             "columns": columns, "method": method, "threshold": threshold,
@@ -1023,19 +979,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "strategy": strategy, "cells_imputed": 0, "detail": "No outliers found.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="IMPUTE_OUTLIERS",
-                details={"method": method, "strategy": strategy, "cells_imputed": cells_imputed},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "IMPUTE_OUTLIERS",
+                                 {"method": method, "strategy": strategy, "cells_imputed": cells_imputed})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({
             "columns": columns, "method": method, "threshold": threshold,
@@ -1076,19 +1024,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "cells_capped": 0, "detail": "No values outside the percentile bounds.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="CAP_OUTLIERS",
-                details={"lower_pct": lower_pct, "upper_pct": upper_pct, "cells_capped": cells_capped},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "CAP_OUTLIERS",
+                                 {"lower_pct": lower_pct, "upper_pct": upper_pct, "cells_capped": cells_capped})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"columns": columns, "lower_pct": lower_pct, "upper_pct": upper_pct, "cells_capped": cells_capped})
 
@@ -1120,19 +1060,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "skipped_columns": skipped, "detail": "No columns were transformed.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="TRANSFORM_COLUMN",
-                details={"function": function, "columns": transformed},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "TRANSFORM_COLUMN",
+                                 {"function": function, "columns": transformed})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"function": function, "transformed_columns": transformed, "skipped_columns": skipped})
 
@@ -1159,23 +1091,15 @@ class DatalabViewSet(viewsets.ViewSet):
 
             df, dropped = df_drop_columns(df, columns)
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            fields_to_update = ["file_size", "updated_date"]
+            extra = []
             if dataset.column_casts and any(c in dataset.column_casts for c in dropped):
                 dataset.column_casts = {k: v for k, v in dataset.column_casts.items() if k not in dropped}
-                fields_to_update.append("column_casts")
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=fields_to_update)
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="DROP_COLUMNS",
-                details={"columns_dropped": dropped},
-            )
+                extra = ["column_casts"]
+            try:
+                _commit_mutation(df, dataset, request.user, "DROP_COLUMNS",
+                                 {"columns_dropped": dropped}, extra_save_fields=extra)
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"columns_dropped": dropped, "remaining_columns": list(df.columns)})
 
@@ -1222,19 +1146,12 @@ class DatalabViewSet(viewsets.ViewSet):
 
             df = df_add_column(df, new_name, formula, operand_a, operand_b)
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="ADD_COLUMN",
-                details={"new_name": new_name, "formula": formula, "operand_a": operand_a, "operand_b": operand_b},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "ADD_COLUMN",
+                                 {"new_name": new_name, "formula": formula,
+                                  "operand_a": operand_a, "operand_b": operand_b})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({
             "new_column": new_name, "formula": formula,
@@ -1290,19 +1207,12 @@ class DatalabViewSet(viewsets.ViewSet):
                     "detail": "No rows were removed — all rows matched the filter.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="FILTER_ROWS",
-                details={"column": column, "operator": operator, "value": str(value), "rows_removed": rows_removed},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "FILTER_ROWS",
+                                 {"column": column, "operator": operator,
+                                  "value": str(value), "rows_removed": rows_removed})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({
             "column": column, "operator": operator, "value": value,
@@ -1359,19 +1269,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "cells_changed": 0, "detail": "No values were changed.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="CLEAN_STRING",
-                details={"operation": operation, "columns": columns, "cells_changed": cells_changed},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "CLEAN_STRING",
+                                 {"operation": operation, "columns": columns, "cells_changed": cells_changed})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"operation": operation, "columns": columns, "cells_changed": cells_changed})
 
@@ -1403,19 +1305,11 @@ class DatalabViewSet(viewsets.ViewSet):
                     "skipped_columns": skipped, "detail": "No columns were scaled.",
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="SCALE_COLUMNS",
-                details={"method": method, "columns": scaled},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "SCALE_COLUMNS",
+                                 {"method": method, "columns": scaled})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"method": method, "scaled_columns": scaled, "skipped_columns": skipped})
 
@@ -1457,19 +1351,11 @@ class DatalabViewSet(viewsets.ViewSet):
 
             df, added_columns = df_extract_datetime_features(df, column, features)
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="EXTRACT_DATETIME",
-                details={"source_column": column, "added_columns": added_columns},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "EXTRACT_DATETIME",
+                                 {"source_column": column, "added_columns": added_columns})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"source_column": column, "added_columns": added_columns, "total_columns": len(df.columns)})
 
@@ -1508,21 +1394,16 @@ class DatalabViewSet(viewsets.ViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            df, result_info = df_encode_columns(df, columns, strategy=strategy)
+            try:
+                df, result_info = df_encode_columns(df, columns, strategy=strategy)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="ENCODE_COLUMNS",
-                details={"strategy": strategy, "columns": columns},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "ENCODE_COLUMNS",
+                                 {"strategy": strategy, "columns": columns})
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"strategy": strategy, "result": result_info, "total_columns": len(df.columns)})
 
@@ -1533,7 +1414,10 @@ class DatalabViewSet(viewsets.ViewSet):
             if err:
                 return err
 
-            df, rename_map = df_normalize_column_names(df)
+            try:
+                df, rename_map = df_normalize_column_names(df)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
             if not rename_map:
                 return Response({
@@ -1541,20 +1425,12 @@ class DatalabViewSet(viewsets.ViewSet):
                     "columns": list(df.columns),
                 })
 
-            if not save_dataframe(df, dataset.file.path, dataset.file_format):
-                return Response({"detail": _SAVE_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-            invalidate_dataframe_cache(dataset.id)
             if dataset.column_casts:
                 dataset.column_casts = {rename_map.get(k, k): v for k, v in dataset.column_casts.items()}
-            dataset.file_size = dataset.file.size
-            dataset.save(update_fields=["file_size", "column_casts", "updated_date"])
-            DatasetActivityLog.objects.create(
-                user=request.user,
-                dataset=dataset,
-                dataset_name_snap=dataset.file_name,
-                action="NORMALIZE_COLUMN_NAMES",
-                details={"renamed": rename_map},
-            )
+            try:
+                _commit_mutation(df, dataset, request.user, "NORMALIZE_COLUMN_NAMES",
+                                 {"renamed": rename_map}, extra_save_fields=["column_casts"])
+            except RuntimeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"renamed": rename_map, "columns": list(df.columns)})

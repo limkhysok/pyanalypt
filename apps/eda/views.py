@@ -1,5 +1,6 @@
-import pandas as pd
+import logging
 
+import pandas as pd
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -18,6 +19,8 @@ from apps.core.data_engine import (
     get_cached_dataframe,
 )
 from apps.datasets.models import Dataset
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_BINS = 20
 _MAX_BINS = 100
@@ -41,7 +44,7 @@ def _load_df(dataset_id, request):
     except Dataset.DoesNotExist:
         return Response({"detail": "Dataset not found."}, status=status.HTTP_404_NOT_FOUND), None
 
-    df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format)
+    df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format, version=dataset.updated_date)
     if df is None:
         return Response({"detail": "Could not load dataset file."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR), None
 
@@ -101,8 +104,9 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_correlation(df, columns, method=method)
-        except Exception:
-            return Response({"detail": "Failed to compute correlation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.exception("eda_correlation failed for dataset %s", dataset_id)
+            return Response({"detail": f"Failed to compute correlation: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
     @action(detail=False, methods=["get"])
@@ -135,8 +139,9 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_distribution(df, columns, bins=bins)
-        except Exception:
-            return Response({"detail": "Failed to compute distribution."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.exception("eda_distribution failed for dataset %s", dataset_id)
+            return Response({"detail": f"Failed to compute distribution: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
     @action(detail=False, methods=["get"])
@@ -167,8 +172,9 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_value_counts(df, columns, top_n=top_n)
-        except Exception:
-            return Response({"detail": "Failed to compute value counts."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.exception("eda_value_counts failed for dataset %s", dataset_id)
+            return Response({"detail": f"Failed to compute value counts: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
     @action(detail=False, methods=["get"])
@@ -209,8 +215,9 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_crosstab(df, col_a, col_b, normalize=normalize)
-        except Exception:
-            return Response({"detail": "Failed to compute crosstab."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.exception("eda_crosstab failed for dataset %s", dataset_id)
+            return Response({"detail": f"Failed to compute crosstab: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
     @action(detail=False, methods=["get"])
@@ -249,8 +256,9 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_outlier_summary(df, method=method, threshold=threshold)
-        except Exception:
-            return Response({"detail": "Failed to compute outlier summary."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.exception("eda_outlier_summary failed for dataset %s", dataset_id)
+            return Response({"detail": f"Failed to compute outlier summary: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
     @action(detail=False, methods=["get"])
@@ -265,8 +273,9 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_missing_heatmap(df)
-        except Exception:
-            return Response({"detail": "Failed to compute missing heatmap."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.exception("eda_missing_heatmap failed for dataset %s", dataset_id)
+            return Response({"detail": f"Failed to compute missing heatmap: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
     @action(detail=False, methods=["get"])
@@ -305,6 +314,7 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_pairwise(df, col_x, col_y, sample=sample)
-        except Exception:
-            return Response({"detail": "Failed to compute pairwise scatter."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.exception("eda_pairwise failed for dataset %s", dataset_id)
+            return Response({"detail": f"Failed to compute pairwise scatter: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)

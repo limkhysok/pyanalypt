@@ -9,17 +9,22 @@ from django.core.cache import cache
 logger = logging.getLogger(__name__)
 
 
-def _df_cache_key(dataset_id):
+def _df_cache_key(dataset_id, version=None):
+    if version is not None:
+        v = version.timestamp() if hasattr(version, "timestamp") else version
+        return f"df:{dataset_id}:{v}"
     return f"df:{dataset_id}"
 
 
-def get_cached_dataframe(dataset_id, file_path, file_format):
+def get_cached_dataframe(dataset_id, file_path, file_format, version=None):
     """
     Return a DataFrame from cache (Redis in prod, LocMemCache in dev), or load
     from disk on a miss and populate the cache with a 2-hour TTL.
+    Pass version=dataset.updated_date so stale cache entries from before the
+    last mutation are automatically bypassed without explicit invalidation.
     Falls back gracefully if the cache is unavailable.
     """
-    key = _df_cache_key(dataset_id)
+    key = _df_cache_key(dataset_id, version)
     blob = cache.get(key)
     if blob is not None:
         try:
@@ -38,9 +43,13 @@ def get_cached_dataframe(dataset_id, file_path, file_format):
     return df
 
 
-def invalidate_dataframe_cache(dataset_id):
-    """Remove the cached DataFrame for a dataset (call after file mutation or deletion)."""
-    cache.delete(_df_cache_key(dataset_id))
+def invalidate_dataframe_cache(dataset_id, version=None):
+    """
+    Remove the cached DataFrame for a dataset.
+    Pass version=dataset.updated_date to target the exact versioned key;
+    omit to delete the legacy unversioned key (e.g. on dataset deletion).
+    """
+    cache.delete(_df_cache_key(dataset_id, version))
 
 
 def load_dataframe(file_path, file_format):
@@ -701,6 +710,11 @@ def filter_rows(df, column, operator, value=None):
     """
     rows_before = len(df)
     col = df[column]
+
+    numeric_operators = ("gt", "gte", "lt", "lte")
+    if operator in numeric_operators and not pd.api.types.is_numeric_dtype(col):
+        raise TypeError(f"Operator '{operator}' requires a numeric column. '{column}' is {col.dtype}.")
+
     if operator == "eq":
         mask = col == value
     elif operator == "ne":
@@ -808,6 +822,15 @@ def encode_columns(df, columns, strategy="label"):
     result_info is a list of dicts per column describing what was done.
     """
     result_info = []
+    
+    if strategy == "onehot":
+        high_cardinality = [c for c in columns if df[c].nunique() > 50]
+        if high_cardinality:
+            raise ValueError(
+                f"One-hot encoding is limited to columns with <= 50 unique values. "
+                f"High cardinality columns: {high_cardinality}"
+            )
+
     for col in columns:
         if strategy == "label":
             codes, uniques = pd.factorize(df[col])
@@ -830,17 +853,30 @@ def encode_columns(df, columns, strategy="label"):
 
 
 def normalize_column_names(df):
-    """Rename all columns to lowercase_snake_case. Returns (df, rename_map)."""
+    """
+    Rename all columns to lowercase_snake_case. Returns (df, rename_map).
+    Raises ValueError if two columns would normalize to the same name.
+    """
     old_names = list(df.columns)
-    df = df.copy()
-    df.columns = (
+    new_names = (
         df.columns.astype(str)
         .str.lower()
         .str.strip()
         .str.replace(r"[^\w]+", "_", regex=True)
         .str.strip("_")
+        .tolist()
     )
-    rename_map = {old: new for old, new in zip(old_names, df.columns) if old != new}
+    seen = {}
+    for old, new in zip(old_names, new_names):
+        if new in seen:
+            raise ValueError(
+                f"Columns '{seen[new]}' and '{old}' both normalize to '{new}'. "
+                f"Rename one of them before normalizing."
+            )
+        seen[new] = old
+    df = df.copy()
+    df.columns = new_names
+    rename_map = {old: new for old, new in zip(old_names, new_names) if old != new}
     return df, rename_map
 
 
