@@ -1250,9 +1250,10 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 
 > Values that cannot be converted are coerced to `null` (NaT for datetime, NaN for numeric) rather than raising an error.
 
-- **Response (200 OK)**:
+- **Response (200 OK)** — all casts succeeded:
 ```json
 {
+  "partial_failure": false,
   "updated_columns": [
     { "column": "Date",       "from_dtype": "object", "to_dtype": "datetime64[ns]", "status": "ok" },
     { "column": "Quantity",   "from_dtype": "object", "to_dtype": "Int64",          "status": "ok" },
@@ -1261,7 +1262,18 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 }
 ```
 
-> If a column cast fails, `status` will be `"error: <reason>"` and `to_dtype` will be `null`. Other columns in the same request that succeeded are still saved.
+- **Response (200 OK)** — partial success (`partial_failure: true` when at least one column succeeded and at least one failed):
+```json
+{
+  "partial_failure": true,
+  "updated_columns": [
+    { "column": "Date",   "from_dtype": "object", "to_dtype": "datetime64[ns]", "status": "ok" },
+    { "column": "Amount", "from_dtype": "object", "to_dtype": null,             "status": "error", "detail": "could not convert string to float" }
+  ]
+}
+```
+
+> If a column cast fails, `status` will be `"error"` and `to_dtype` will be `null`. Other columns in the same request that succeeded are still persisted.
 > Casting to `"string"` when the column has null values returns a `"warning"` status — nulls become the literal string `"nan"`. Use `force: true` to proceed anyway.
 
 **Warning response** (returned as `400` when warnings exist and `force` is not set):
@@ -1277,6 +1289,16 @@ Cast one or more columns to a new dtype. The change is persisted back to the dat
 > `validation_errors` lists columns that cannot be cast at all (hard errors). `warnings` lists risky-but-possible conversions. Both can be non-empty at the same time. To proceed despite warnings, resubmit with `"force": true` — hard errors in `validation_errors` are always skipped regardless of `force`.
 > Successful casts are recorded in the activity log with `action: "CAST"` and `details: { columns: { col: type } }`.
 > `dataset.file_size` is synced after every successful cast.
+
+- **Response (422 Unprocessable Entity)** — every requested cast failed (nothing was persisted):
+```json
+{
+  "detail": "All requested casts failed.",
+  "updated_columns": [
+    { "column": "Name", "target": "integer", "status": "error", "detail": "invalid literal for int() with base 10: 'Alice'" }
+  ]
+}
+```
 
 - **Response (400)** — unknown column:
 ```json

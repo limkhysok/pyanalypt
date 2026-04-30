@@ -1,10 +1,11 @@
-from unittest.mock import MagicMock, patch
+import io
+from unittest.mock import patch
 
 import pandas as pd
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework import status
-from rest_framework.test import APIClient
+from rest_framework.test import APITestCase
 
 from apps.datasets.models import Dataset
 
@@ -22,39 +23,39 @@ def _make_df():
     })
 
 
-def _mock_dataset():
-    ds = MagicMock(spec=Dataset)
-    ds.id = 1
-    ds.file.path = "/fake/path.csv"
-    ds.file_format = "csv"
-    ds.column_casts = {}
-    return ds
+def _csv_upload(df, filename="test.csv"):
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    return SimpleUploadedFile(filename, buf.read().encode(), content_type="text/csv")
 
 
-class EDATestBase(TestCase):
+class EDATestBase(APITestCase):
     def setUp(self):
-        self.client = APIClient()
         self.user = User.objects.create_user(username="testuser", password="pw")
         self.client.force_authenticate(user=self.user)
         self.df = _make_df()
-        self.dataset = _mock_dataset()
+        self.dataset = Dataset.objects.create(
+            user=self.user,
+            file=_csv_upload(self.df),
+            file_name="test.csv",
+            file_format="csv",
+        )
 
-    def url(self, endpoint, dataset_id=1):
-        return f"/api/v1/eda/{endpoint}/{dataset_id}/"
+    def url(self, endpoint, dataset_id=None):
+        pk = dataset_id if dataset_id is not None else self.dataset.id
+        return f"/api/v1/eda/{endpoint}/{pk}/"
 
-    def get(self, endpoint, params=None, dataset_id=1, df=None):
+    def get(self, endpoint, params=None, dataset_id=None, df=None):
         df = self.df if df is None else df
-        with patch.object(Dataset.objects, "get", return_value=self.dataset), \
-             patch(f"{_VIEWS}.get_cached_dataframe", return_value=df):
+        with patch(f"{_VIEWS}.get_cached_dataframe", return_value=df):
             return self.client.get(self.url(endpoint, dataset_id), params or {})
 
     def get_404(self, endpoint, params=None):
-        with patch.object(Dataset.objects, "get", side_effect=Dataset.DoesNotExist):
-            return self.client.get(self.url(endpoint), params or {})
+        return self.client.get(self.url(endpoint, dataset_id=99999), params or {})
 
     def get_no_df(self, endpoint, params=None):
-        with patch.object(Dataset.objects, "get", return_value=self.dataset), \
-             patch(f"{_VIEWS}.get_cached_dataframe", return_value=None):
+        with patch(f"{_VIEWS}.get_cached_dataframe", return_value=None):
             return self.client.get(self.url(endpoint), params or {})
 
 

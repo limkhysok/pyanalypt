@@ -2,7 +2,6 @@ import logging
 
 import pandas as pd
 from rest_framework import permissions, status, viewsets
-from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.core.data_engine import (
@@ -77,7 +76,6 @@ def _parse_columns_param(raw, df, require_numeric=False):
 class EDAViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
-    @action(detail=False, methods=["get"])
     def correlation(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -104,12 +102,13 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_correlation(df, columns, method=method)
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
             logger.exception("eda_correlation failed for dataset %s", dataset_id)
-            return Response({"detail": f"Failed to compute correlation: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"detail": "Internal error computing correlation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"])
     def distribution(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -139,12 +138,13 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_distribution(df, columns, bins=bins)
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
             logger.exception("eda_distribution failed for dataset %s", dataset_id)
-            return Response({"detail": f"Failed to compute distribution: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"detail": "Internal error computing distribution."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"])
     def value_counts(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -172,12 +172,13 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_value_counts(df, columns, top_n=top_n)
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
             logger.exception("eda_value_counts failed for dataset %s", dataset_id)
-            return Response({"detail": f"Failed to compute value counts: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"detail": "Internal error computing value counts."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"])
     def crosstab(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -215,12 +216,13 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_crosstab(df, col_a, col_b, normalize=normalize)
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
             logger.exception("eda_crosstab failed for dataset %s", dataset_id)
-            return Response({"detail": f"Failed to compute crosstab: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"detail": "Internal error computing crosstab."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"])
     def outlier_summary(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -256,12 +258,13 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_outlier_summary(df, method=method, threshold=threshold)
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
             logger.exception("eda_outlier_summary failed for dataset %s", dataset_id)
-            return Response({"detail": f"Failed to compute outlier summary: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"detail": "Internal error computing outlier summary."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"])
     def missing_heatmap(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -273,12 +276,13 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_missing_heatmap(df)
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
             logger.exception("eda_missing_heatmap failed for dataset %s", dataset_id)
-            return Response({"detail": f"Failed to compute missing heatmap: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"detail": "Internal error computing missing heatmap."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
-    @action(detail=False, methods=["get"])
     def pairwise(self, request, dataset_id=None):
         err, result = _load_df(dataset_id, request)
         if err:
@@ -314,7 +318,9 @@ class EDAViewSet(viewsets.ViewSet):
 
         try:
             data = eda_pairwise(df, col_x, col_y, sample=sample)
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
             logger.exception("eda_pairwise failed for dataset %s", dataset_id)
-            return Response({"detail": f"Failed to compute pairwise scatter: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"detail": "Internal error computing pairwise scatter."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)

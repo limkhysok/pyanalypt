@@ -1,13 +1,18 @@
+import io
 import logging
+
 import pandas as pd
 
+from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
-from django.shortcuts import get_object_or_404
 
 from apps.datasets.models import Dataset, DatasetActivityLog
 from apps.core.data_engine import (
+    _df_cache_key,
     get_cached_dataframe,
     save_dataframe,
     apply_cast,
@@ -70,10 +75,6 @@ def _commit_mutation(df, dataset, user, action, details, extra_save_fields=None)
     fields = ["file_size", "updated_date"] + (extra_save_fields or [])
     dataset.save(update_fields=fields)
 
-    import io
-    from django.core.cache import cache
-    from django.conf import settings
-    from apps.core.data_engine import _df_cache_key
     try:
         buf = io.BytesIO()
         df.to_parquet(buf, index=True)
@@ -115,47 +116,32 @@ def _format_size(size_bytes):
 
 
 _DEDUP_MODES = ("all_first", "all_last", "subset_keep", "drop_all")
+_ONE_HOT_MAX_CARDINALITY = 50
 
 
 def _validate_dedup_params(mode, subset, keep):
+    """Returns an error string on failure, None on success."""
     if mode not in _DEDUP_MODES:
-        return Response(
-            {"detail": f"Invalid 'mode'. Choose one of: {sorted(_DEDUP_MODES)}"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return f"Invalid 'mode'. Choose one of: {sorted(_DEDUP_MODES)}"
     if mode == "subset_keep":
         if subset is None:
-            return Response(
-                {"detail": "'subset' is required for mode 'subset_keep'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return "'subset' is required for mode 'subset_keep'."
         if keep not in ("first", "last"):
-            return Response(
-                {"detail": "For mode 'subset_keep', 'keep' must be 'first' or 'last'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return "For mode 'subset_keep', 'keep' must be 'first' or 'last'."
     return None
 
 
 def _validate_subset_cols(subset, df):
+    """Returns an error string on failure, None on success."""
     if subset is None:
         return None
     if not isinstance(subset, list) or not subset:
-        return Response(
-            {"detail": "'subset' must be a non-empty list of column names."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return "'subset' must be a non-empty list of column names."
     if not all(isinstance(c, str) for c in subset):
-        return Response(
-            {"detail": "'subset' must be a list of column name strings."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return "'subset' must be a list of column name strings."
     unknown_cols = [c for c in subset if c not in df.columns]
     if unknown_cols:
-        return Response(
-            {"detail": f"Columns not found in dataset: {unknown_cols}"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return f"Columns not found in dataset: {unknown_cols}"
     return None
 
 
@@ -173,64 +159,38 @@ def _parse_numeric_columns(source, df):
     """
     Parse and validate the 'columns' param for outlier/transform endpoints.
     source: list from request.data, or comma-separated string from query_params.
-    Returns (columns_list, error_response_or_None).
+    Returns (error_str, columns_list) — error_str is None on success.
     """
     if not source:
-        return None, Response(
-            {"detail": "'columns' is required."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return "'columns' is required.", None
     if isinstance(source, str):
         columns = [c.strip() for c in source.split(",") if c.strip()]
     elif isinstance(source, list):
         columns = source
     else:
-        return None, Response(
-            {"detail": "'columns' must be a list or comma-separated string."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return "'columns' must be a list or comma-separated string.", None
     if not columns:
-        return None, Response(
-            {"detail": "'columns' must not be empty."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return "'columns' must not be empty.", None
     unknown = [c for c in columns if c not in df.columns]
     if unknown:
-        return None, Response(
-            {"detail": f"Columns not found in dataset: {unknown}"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return f"Columns not found in dataset: {unknown}", None
     non_numeric = [c for c in columns if not pd.api.types.is_numeric_dtype(df[c])]
     if non_numeric:
-        return None, Response(
-            {"detail": f"Columns must be numeric: {non_numeric}"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    return columns, None
+        return f"Columns must be numeric: {non_numeric}", None
+    return None, columns
 
 
 def _validate_drop_nulls_params(axis, how, thresh_pct):
+    """Returns an error string on failure, None on success."""
     if axis not in ("rows", "columns"):
-        return Response(
-            {"detail": "'axis' must be 'rows' or 'columns'."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return "'axis' must be 'rows' or 'columns'."
     if axis == "rows" and how not in ("any", "all"):
-        return Response(
-            {"detail": "'how' must be 'any' or 'all'."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return "'how' must be 'any' or 'all'."
     if axis == "columns":
         if thresh_pct is None:
-            return Response(
-                {"detail": "'thresh_pct' is required when axis is 'columns'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return "'thresh_pct' is required when axis is 'columns'."
         if not isinstance(thresh_pct, (int, float)) or not (0 <= thresh_pct <= 100):
-            return Response(
-                {"detail": "'thresh_pct' must be a number between 0 and 100."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return "'thresh_pct' must be a number between 0 and 100."
     return None
 
 
@@ -267,7 +227,7 @@ def _load_and_lock(dataset_id, user):
     Must be called inside a transaction.atomic() block.
     Returns (error_response, None, None) on failure or (None, dataset, df) on success.
     """
-    dataset = get_object_or_404(Dataset.objects.select_for_update(), pk=dataset_id, user=user)
+    dataset = get_object_or_404(Dataset.objects.all().select_for_update(), pk=dataset_id, user=user)
     df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format, version=dataset.updated_date)
     if df is None:
         return Response({"detail": _LOAD_FAILED}, status=status.HTTP_500_INTERNAL_SERVER_ERROR), None, None
@@ -303,15 +263,15 @@ def _resolve_formula_context(request, dataset_id, target_field="target", lock=Fa
 
     try:
         tolerance = float(tolerance)
-        if tolerance < 0:
+        if tolerance <= 0:
             raise ValueError
     except (TypeError, ValueError):
         return Response(
-            {"detail": "'tolerance' must be a non-negative number."},
+            {"detail": "'tolerance' must be a positive number (> 0)."},
             status=status.HTTP_400_BAD_REQUEST,
         ), None
 
-    qs = Dataset.objects.select_for_update() if lock else Dataset.objects
+    qs = Dataset.objects.all().select_for_update() if lock else Dataset.objects.all()
     dataset = get_object_or_404(qs, pk=dataset_id, user=request.user)
     df = get_cached_dataframe(dataset.id, dataset.file.path, dataset.file_format, version=dataset.updated_date)
     if df is None:
@@ -465,9 +425,9 @@ class DatalabViewSet(viewsets.ViewSet):
         if dataset.column_casts:
             df = apply_stored_casts(df, dataset.column_casts)
 
-        columns, err = _parse_numeric_columns(columns_raw, df)
+        err, columns = _parse_numeric_columns(columns_raw, df)
         if err:
-            return err
+            return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
         result = df_detect_outliers(df, columns, method=method, threshold=threshold)
         return Response({
@@ -550,7 +510,17 @@ class DatalabViewSet(viewsets.ViewSet):
                 except RuntimeError as exc:
                     return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            return Response({"updated_columns": hard_errors + cast_results})
+            all_results = hard_errors + cast_results
+            failed_count = len(hard_errors) + sum(1 for r in cast_results if r.get("status") == "error")
+
+            if not successful:
+                return Response(
+                    {"detail": "All requested casts failed.", "updated_columns": all_results},
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+
+            partial_failure = failed_count > 0
+            return Response({"partial_failure": partial_failure, "updated_columns": all_results})
 
     def update_cell(self, request, dataset_id=None):
         """PATCH /datalab/update-cell/{dataset_id}/"""
@@ -654,18 +624,18 @@ class DatalabViewSet(viewsets.ViewSet):
         subset = request.data.get("subset")
         keep = request.data.get("keep", "first")
 
-        error = _validate_dedup_params(mode, subset, keep)
-        if error:
-            return error
+        err_msg = _validate_dedup_params(mode, subset, keep)
+        if err_msg:
+            return Response({"detail": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
             if err:
                 return err
 
-            error = _validate_subset_cols(subset, df)
-            if error:
-                return error
+            err_msg = _validate_subset_cols(subset, df)
+            if err_msg:
+                return Response({"detail": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
             rows_before = len(df)
             df = _apply_dedup(df, mode, subset, keep)
@@ -695,6 +665,15 @@ class DatalabViewSet(viewsets.ViewSet):
         if not replacements or not isinstance(replacements, dict):
             return Response(
                 {"detail": "'replacements' must be an object mapping old values to new values."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if columns is None and not request.data.get("confirm_global", False):
+            return Response(
+                {"detail": (
+                    "'columns' is required. To replace values across all columns, "
+                    "pass 'confirm_global: true' to confirm the intent."
+                )},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -745,9 +724,9 @@ class DatalabViewSet(viewsets.ViewSet):
         subset = request.data.get("subset")
         thresh_pct = request.data.get("thresh_pct")
 
-        error = _validate_drop_nulls_params(axis, how, thresh_pct)
-        if error:
-            return error
+        err_msg = _validate_drop_nulls_params(axis, how, thresh_pct)
+        if err_msg:
+            return Response({"detail": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -755,9 +734,9 @@ class DatalabViewSet(viewsets.ViewSet):
                 return err
 
             if axis == "rows" and subset is not None:
-                error = _validate_subset_cols(subset, df)
-                if error:
-                    return error
+                err_msg = _validate_subset_cols(subset, df)
+                if err_msg:
+                    return Response({"detail": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
             df, stats = df_drop_nulls(df, axis, how=how, subset=subset, thresh_pct=thresh_pct)
             dropped_count = stats.get("rows_dropped") or len(stats.get("columns_dropped", []))
@@ -859,9 +838,9 @@ class DatalabViewSet(viewsets.ViewSet):
                 return err
 
             if columns is not None:
-                error = _validate_subset_cols(columns, df)
-                if error:
-                    return error
+                err_msg = _validate_subset_cols(columns, df)
+                if err_msg:
+                    return Response({"detail": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
             df, cells_filled, skipped_columns = df_fill_nulls(df, strategy, columns=columns, value=value)
 
@@ -908,9 +887,9 @@ class DatalabViewSet(viewsets.ViewSet):
             if err:
                 return err
 
-            columns, err = _parse_numeric_columns(columns_raw, df)
+            err, columns = _parse_numeric_columns(columns_raw, df)
             if err:
-                return err
+                return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
             rows_before = len(df)
             df, rows_dropped = df_trim_outliers(df, columns, method=method, threshold=threshold)
@@ -967,9 +946,9 @@ class DatalabViewSet(viewsets.ViewSet):
             if err:
                 return err
 
-            columns, err = _parse_numeric_columns(columns_raw, df)
+            err, columns = _parse_numeric_columns(columns_raw, df)
             if err:
-                return err
+                return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
             df, cells_imputed = df_impute_outliers(df, columns, method=method, threshold=threshold, strategy=strategy)
 
@@ -1012,9 +991,9 @@ class DatalabViewSet(viewsets.ViewSet):
             if err:
                 return err
 
-            columns, err = _parse_numeric_columns(columns_raw, df)
+            err, columns = _parse_numeric_columns(columns_raw, df)
             if err:
-                return err
+                return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
             df, cells_capped = df_cap_outliers(df, columns, lower_pct=lower_pct, upper_pct=upper_pct)
 
@@ -1048,9 +1027,9 @@ class DatalabViewSet(viewsets.ViewSet):
             if err:
                 return err
 
-            columns, err = _parse_numeric_columns(columns_raw, df)
+            err, columns = _parse_numeric_columns(columns_raw, df)
             if err:
-                return err
+                return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
             df, transformed, skipped = df_transform_column(df, columns, function=function)
 
@@ -1293,9 +1272,9 @@ class DatalabViewSet(viewsets.ViewSet):
             if err:
                 return err
 
-            columns, err = _parse_numeric_columns(columns_raw, df)
+            err, columns = _parse_numeric_columns(columns_raw, df)
             if err:
-                return err
+                return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
             df, scaled, skipped = df_scale_columns(df, columns, method=method)
 
@@ -1393,6 +1372,17 @@ class DatalabViewSet(viewsets.ViewSet):
                     {"detail": f"Encoding requires categorical or text columns. These are numeric: {numeric_cols}"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            if strategy == "onehot":
+                high_card = [c for c in columns if df[c].nunique() > _ONE_HOT_MAX_CARDINALITY]
+                if high_card:
+                    return Response(
+                        {"detail": (
+                            f"One-hot encoding is limited to columns with ≤ {_ONE_HOT_MAX_CARDINALITY} "
+                            f"unique values. High-cardinality columns: {high_card}"
+                        )},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             try:
                 df, result_info = df_encode_columns(df, columns, strategy=strategy)
