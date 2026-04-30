@@ -2930,6 +2930,192 @@ X/Y point pairs for scatter plot visualization between two columns.
 
 ---
 
+## 📈 Visualization (ECharts)
+
+All visualization endpoints return **Apache ECharts-ready `option` objects** — pass the response body directly to `echarts.setOption()`. All endpoints are read-only (`GET`) and require authentication.
+
+**Base path**: `/api/v1/viz/`
+
+> All endpoints return `{"detail": "..."}` on error. Ownership is enforced — datasets belonging to other users return 404.
+
+---
+
+### 1. Bar Chart
+
+Aggregate a numeric column by a categorical column and return a bar chart option. Supports grouped bars via `group_by`.
+
+- **Endpoint**: `GET /viz/bar/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `x_col` | string | *(required)* | Categorical column for the X-axis |
+| `y_col` | string | *(required)* | Numeric column to aggregate — **must be numeric** |
+| `agg` | string | `sum` | Aggregation function: `sum`, `mean`, `count`, `min`, `max` |
+| `group_by` | string | — | Optional second categorical column for grouped bars |
+| `limit` | integer | `20` | Max number of X-axis categories to return (1–100) |
+
+#### Response (200 OK)
+```json
+{
+  "chart_type": "bar",
+  "xAxis": { "type": "category", "name": "city", "data": ["New York", "London", "Tokyo"] },
+  "yAxis": { "type": "value", "name": "sum(salary)" },
+  "series": [
+    { "name": "salary", "type": "bar", "data": [420000, 380000, 310000] }
+  ]
+}
+```
+
+**With `group_by`** — each group becomes its own series:
+```json
+{
+  "chart_type": "bar",
+  "xAxis": { "type": "category", "name": "city", "data": ["New York", "London"] },
+  "yAxis": { "type": "value", "name": "sum(salary)" },
+  "series": [
+    { "name": "Engineering", "type": "bar", "data": [250000, 200000] },
+    { "name": "Sales",       "type": "bar", "data": [170000, 180000] }
+  ]
+}
+```
+
+> Categories are ranked by total Y magnitude — the top `limit` are returned.
+> When using `group_by`, up to 20 groups are included (ranked by total Y across all X categories).
+
+---
+
+### 2. Line Chart
+
+Plot one or more numeric columns against an X-axis column. X can be datetime, numeric, or categorical — it is sorted ascending by default.
+
+- **Endpoint**: `GET /viz/line/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `x_col` | string | *(required)* | X-axis column (any type — datetime recommended) |
+| `y_cols` | string[] | *(required)* | One or more numeric columns (repeat param: `y_cols=revenue&y_cols=cost`) |
+| `sort` | boolean | `true` | Sort rows by `x_col` ascending before plotting |
+
+#### Response (200 OK)
+```json
+{
+  "chart_type": "line",
+  "xAxis": { "type": "category", "name": "date", "data": ["2024-01", "2024-02", "2024-03"] },
+  "yAxis": { "type": "value" },
+  "series": [
+    { "name": "revenue", "type": "line", "data": [12000, 15000, 13500] },
+    { "name": "cost",    "type": "line", "data": [8000, 9000, 8500] }
+  ]
+}
+```
+
+> All `y_cols` must be numeric. `x_col` can be any type (datetime values are serialized as strings).
+> Response is capped at **5 000 rows** — if the dataset is larger, only the first 5 000 (after sort) are returned.
+
+---
+
+### 3. Scatter Chart
+
+X/Y scatter plot between two numeric columns. Supports series-level grouping via `color_by` and random sampling for large datasets.
+
+- **Endpoint**: `GET /viz/scatter/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `col_x` | string | *(required)* | X-axis column — **must be numeric** |
+| `col_y` | string | *(required)* | Y-axis column — **must be numeric** |
+| `color_by` | string | — | Optional categorical column — splits into one series per group |
+| `sample` | integer | `500` | Max points per series (1–5 000) |
+
+#### Response (200 OK)
+```json
+{
+  "chart_type": "scatter",
+  "xAxis": { "type": "value", "name": "age" },
+  "yAxis": { "type": "value", "name": "salary" },
+  "pearson_r": 0.7412,
+  "series": [
+    {
+      "name": "age vs salary",
+      "type": "scatter",
+      "data": [[28, 45000], [35, 62000], [42, 78000]]
+    }
+  ]
+}
+```
+
+**With `color_by`** — one series per group:
+```json
+{
+  "pearson_r": 0.7412,
+  "series": [
+    { "name": "Engineering", "type": "scatter", "data": [[28, 72000], [34, 85000]] },
+    { "name": "Sales",       "type": "scatter", "data": [[31, 55000], [29, 48000]] }
+  ]
+}
+```
+
+> `pearson_r` is always computed on the **full** valid dataset before sampling.
+> Only rows where both `col_x` and `col_y` are non-null are included.
+> Sampling uses `random_state=42` for reproducible results.
+
+---
+
+### 4. Histogram
+
+Distribution chart for one or more numeric columns. Returns ECharts bar options with bin ranges on the X-axis and counts on the Y-axis, plus descriptive stats per column.
+
+- **Endpoint**: `GET /viz/histogram/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `columns` | string[] | *(all numeric)* | Columns to compute (repeat param: `columns=age&columns=salary`) |
+| `bins` | integer | `20` | Number of histogram bins (1–100) |
+
+#### Response (200 OK)
+
+Response is a dict keyed by column name. Each value is a standalone ECharts option:
+```json
+{
+  "age": {
+    "chart_type": "histogram",
+    "xAxis": {
+      "type": "category",
+      "name": "age",
+      "data": ["18.0–26.0", "26.0–34.0", "34.0–42.0"]
+    },
+    "yAxis": { "type": "value", "name": "count" },
+    "series": [
+      { "name": "age", "type": "bar", "data": [42, 118, 95] }
+    ],
+    "stats": {
+      "count": 988,
+      "mean": 34.21,
+      "std": 9.87,
+      "min": 18.0,
+      "max": 65.0,
+      "skewness": 0.312,
+      "kurtosis": -0.451
+    }
+  },
+  "salary": { "..." }
+}
+```
+
+> If `columns` is omitted, all numeric columns are returned.
+> `stats` are computed on the non-null values only.
+> Bin boundaries use `–` (en-dash) as separator: `"18.0–26.0"`.
+
+---
+
 ### Standard Error Format
 ```json
 {

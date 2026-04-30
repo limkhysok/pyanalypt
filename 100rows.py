@@ -4,7 +4,7 @@ import random
 from datetime import datetime, timedelta
 
 # Create synthetic data for a pharmacy selling drugs
-def generate_dirty_pharma_data(num_rows=1000):
+def generate_dirty_pharma_data(num_rows=100):
     # Set seed for reproducibility
     np.random.seed(42)
     random.seed(42)
@@ -119,4 +119,4 @@ def generate_dirty_pharma_data(num_rows=1000):
     return df
 
 if __name__ == "__main__":
-    generate_dirty_pharma_data(1000)
+    generate_dirty_pharma_data(100)
