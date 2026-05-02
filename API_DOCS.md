@@ -3116,6 +3116,238 @@ Response is a dict keyed by column name. Each value is a standalone ECharts opti
 
 ---
 
+## 📝 Reports & Insights
+
+The Reports module lets analysts **save chart snapshots with written insights** and **export the result as a PDF**. A report is a named document tied to a dataset. Each report contains ordered items — each item holds a chart image (PNG captured from ECharts), the chart params used to generate it, and a free-text annotation.
+
+**Base path**: `/api/v1/reports/`
+
+> Ownership is enforced on every endpoint — reports belonging to other users always return 404.
+
+---
+
+### Report Object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | int | Unique identifier |
+| `dataset` | int \| null | FK to the source dataset (nullable) |
+| `title` | string | Report name |
+| `description` | string | Optional summary text |
+| `item_count` | int | Number of items in the report |
+| `created_at` | datetime | Creation timestamp |
+| `updated_at` | datetime | Last modification timestamp |
+| `items` | array | Full item list — only present on `GET /reports/{id}/`, omitted on list |
+
+### ReportItem Object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | int | Unique identifier |
+| `order` | int | Sort position (0-based, ascending) |
+| `chart_type` | string | `bar` \| `line` \| `scatter` \| `histogram` \| `text` \| `""` |
+| `chart_params` | object \| null | JSON snapshot of the query params used to generate the chart |
+| `chart_image` | string | Base64-encoded PNG captured from ECharts (data URI prefix optional) |
+| `annotation` | string | Analyst's written insight for this chart |
+| `created_at` | datetime | When the item was added |
+
+---
+
+### 1. List Reports
+
+Returns all reports owned by the authenticated user, ordered by most recently updated. Items are **not** included — use retrieve for that.
+
+- **Endpoint**: `GET /reports/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+[
+  {
+    "id": 1,
+    "dataset": 23,
+    "title": "Q1 Sales Analysis",
+    "description": "Drug sales breakdown by region.",
+    "item_count": 4,
+    "created_at": "2026-05-01T10:00:00Z",
+    "updated_at": "2026-05-01T11:30:00Z"
+  }
+]
+```
+
+---
+
+### 2. Create Report
+
+- **Endpoint**: `POST /reports/`
+- **Auth Required**: Yes
+- **Request Body**:
+
+| Field | Required | Description |
+|---|---|---|
+| `title` | Yes | Report name (max 255 chars) |
+| `description` | No | Summary text |
+| `dataset` | No | Dataset ID to associate with this report |
+
+```json
+{
+  "title": "Q1 Sales Analysis",
+  "description": "Drug sales breakdown by region.",
+  "dataset": 23
+}
+```
+
+- **Response (201 Created)**: Full `Report` object including `items: []`.
+- **Response (400)**: `title` is missing or blank.
+
+---
+
+### 3. Retrieve Report
+
+Returns the full report with all items ordered by `order` ascending.
+
+- **Endpoint**: `GET /reports/{id}/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+{
+  "id": 1,
+  "dataset": 23,
+  "title": "Q1 Sales Analysis",
+  "description": "Drug sales breakdown by region.",
+  "item_count": 2,
+  "created_at": "2026-05-01T10:00:00Z",
+  "updated_at": "2026-05-01T11:30:00Z",
+  "items": [
+    {
+      "id": 1,
+      "order": 0,
+      "chart_type": "bar",
+      "chart_params": { "x_col": "Drug_Name", "y_col": "Total_Price", "agg": "sum" },
+      "chart_image": "<base64 PNG>",
+      "annotation": "Aspirin dominates Q1 revenue at 42% of total sales.",
+      "created_at": "2026-05-01T10:05:00Z"
+    },
+    {
+      "id": 2,
+      "order": 1,
+      "chart_type": "line",
+      "chart_params": { "x_col": "Date", "y_cols": ["Total_Price"] },
+      "chart_image": "<base64 PNG>",
+      "annotation": "Revenue dipped in week 3 — likely holiday effect.",
+      "created_at": "2026-05-01T10:10:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### 4. Update Report
+
+Update `title` or `description`. Send only the fields you want to change.
+
+- **Endpoint**: `PATCH /reports/{id}/`
+- **Auth Required**: Yes
+- **Request Body** *(any subset)*:
+```json
+{
+  "title": "Q1 Sales Analysis — Final",
+  "description": "Revised after peer review."
+}
+```
+- **Response (200 OK)**: Updated `Report` object.
+
+---
+
+### 5. Delete Report
+
+Permanently deletes the report and all its items.
+
+- **Endpoint**: `DELETE /reports/{id}/`
+- **Auth Required**: Yes
+- **Response (204 No Content)**
+
+---
+
+### 6. Export Report as PDF
+
+Generates and downloads a PDF containing the report title, description, and all items in order. Each item renders its chart image and annotation.
+
+- **Endpoint**: `GET /reports/{id}/export/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+  - `Content-Type: application/pdf`
+  - `Content-Disposition: attachment; filename="Q1_Sales_Analysis.pdf"`
+  - Body: raw PDF bytes
+
+> Items with no `chart_image` render a `[Chart image not available]` placeholder.
+> Items with `chart_type: "text"` render annotation-only (no image slot).
+> An empty report (no items) still produces a valid PDF with just the title and description.
+
+---
+
+### 7. Add Item to Report
+
+Add a chart snapshot + annotation to a report. Up to **50 items** per report.
+
+- **Endpoint**: `POST /reports/{id}/items/`
+- **Auth Required**: Yes
+- **Request Body**:
+
+| Field | Required | Description |
+|---|---|---|
+| `order` | No | Sort position (default `0`) |
+| `chart_type` | No | `bar` \| `line` \| `scatter` \| `histogram` \| `text` |
+| `chart_params` | No | JSON object — the exact query params sent to the viz endpoint |
+| `chart_image` | No | Base64 PNG string from `echarts.getDataURL()` |
+| `annotation` | No | Analyst's written insight |
+
+```json
+{
+  "order": 0,
+  "chart_type": "bar",
+  "chart_params": { "x_col": "Drug_Name", "y_col": "Total_Price", "agg": "sum", "limit": 10 },
+  "chart_image": "<base64 PNG from echarts.getDataURL()>",
+  "annotation": "Aspirin dominates Q1 revenue at 42% of total sales."
+}
+```
+
+- **Response (201 Created)**: The new `ReportItem` object.
+- **Response (400)**: Report already has 50 items.
+
+> **Frontend flow:** call `chart.getDataURL('png')` on the ECharts instance → send the returned base64 string as `chart_image`.
+> `chart_params` is a plain snapshot for reference — it is stored but not re-executed by the backend.
+
+---
+
+### 8. Update Item
+
+Edit an item's annotation, order, or any other field. Send only the fields to change.
+
+- **Endpoint**: `PATCH /reports/{id}/items/{item_id}/`
+- **Auth Required**: Yes
+- **Request Body** *(any subset)*:
+```json
+{
+  "annotation": "Revised insight after data correction.",
+  "order": 2
+}
+```
+- **Response (200 OK)**: Updated `ReportItem` object.
+- **Response (404)**: Item does not belong to this report, or report does not belong to the current user.
+
+---
+
+### 9. Delete Item
+
+Remove a single item from the report. The report itself is not affected.
+
+- **Endpoint**: `DELETE /reports/{id}/items/{item_id}/`
+- **Auth Required**: Yes
+- **Response (204 No Content)**
+
+---
+
 ### Standard Error Format
 ```json
 {

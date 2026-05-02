@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "apps.datasetframe",
     "apps.eda",
     "apps.visualization",
+    "apps.reports",
 ]
 
 MIDDLEWARE = [

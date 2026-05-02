@@ -21,3 +21,4 @@ cryptography
 pyotp
 user-agents
 Pillow
+reportlab
