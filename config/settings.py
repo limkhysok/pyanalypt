@@ -66,7 +66,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.datasets",
     "apps.datalab",
-    "apps.datasetframe",
+    "apps.goals",
     "apps.eda",
     "apps.visualization",
     "apps.reports",

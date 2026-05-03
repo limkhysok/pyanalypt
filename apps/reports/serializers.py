@@ -16,7 +16,7 @@ class ReportSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Report
-        fields = ["id", "dataset", "title", "description", "created_at", "updated_at", "item_count", "items"]
+        fields = ["id", "dataset", "goal", "title", "description", "created_at", "updated_at", "item_count", "items"]
         read_only_fields = ["id", "created_at", "updated_at", "item_count"]
 
 
@@ -25,5 +25,5 @@ class ReportListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Report
-        fields = ["id", "dataset", "title", "description", "created_at", "updated_at", "item_count"]
+        fields = ["id", "dataset", "goal", "title", "description", "created_at", "updated_at", "item_count"]
         read_only_fields = ["id", "created_at", "updated_at", "item_count"]

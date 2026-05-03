@@ -84,6 +84,36 @@ def stream_frame_problem(columns, sample_stats=None):
         yield f"data: [ERROR] {str(e)}\n\n"
 
 
+def stream_suggest_questions(columns, problem_statement=""):
+    """
+    Streams Q1, Q2, Q3... analytical questions as SSE chunks.
+    Questions are generated from dataset column names and an optional problem statement.
+    """
+    client = OllamaClient()
+    system_prompt, prompt = _build_suggest_prompt(columns, problem_statement)
+    try:
+        for token in client.stream_response(prompt, system_prompt=system_prompt):
+            safe_token = token.replace("\n", "\\n")
+            yield f"data: {safe_token}\n\n"
+        yield "data: [DONE]\n\n"
+    except OllamaError as e:
+        yield f"data: [ERROR] {str(e)}\n\n"
+
+
+def _build_suggest_prompt(columns, problem_statement=""):
+    system_prompt = (
+        "You are an expert data analyst. Generate analytical questions for a dataset. "
+        "Output ONLY the questions, one per line, in this exact format:\n"
+        "Q1: [question]\nQ2: [question]\nQ3: [question]\n"
+        "Generate between 3 and 5 questions. No other text, no explanations."
+    )
+    prompt = f"Dataset columns: {', '.join(columns)}\n"
+    if problem_statement:
+        prompt += f"Problem context: {problem_statement}\n"
+    prompt += "\nGenerate analytical questions for this dataset."
+    return system_prompt, prompt
+
+
 def _build_prompt(columns, sample_stats):
     system_prompt = (
         "You are an expert data analyst. Your task is to look at the column headers "

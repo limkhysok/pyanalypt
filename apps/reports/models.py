@@ -13,6 +13,7 @@ CHART_TYPE_CHOICES = [
 class Report(models.Model):
     user    = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="reports")
     dataset = models.ForeignKey("datasets.Dataset", on_delete=models.SET_NULL, null=True, blank=True, related_name="reports")
+    goal    = models.ForeignKey("goals.AnalysisGoal", on_delete=models.SET_NULL, null=True, blank=True, related_name="reports")
     title       = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     created_at  = models.DateTimeField(auto_now_add=True)

@@ -17,7 +17,7 @@ urlpatterns = [
                 path("", include("apps.users.urls")),
                 path("datasets/", include("apps.datasets.urls")),
                 path("datalab/", include("apps.datalab.urls")),
-                path("frames/", include("apps.datasetframe.urls")),
+                path("goals/", include("apps.goals.urls")),
                 path("eda/", include("apps.eda.urls")),
                 path("viz/", include("apps.visualization.urls")),
                 path("reports/", include("apps.reports.urls")),
