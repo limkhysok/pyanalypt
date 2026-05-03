@@ -70,6 +70,9 @@ INSTALLED_APPS = [
     "apps.eda",
     "apps.visualization",
     "apps.reports",
+    "apps.mlstudio",
+    "apps.chat",
+    "apps.dashboards",
 ]
 
 MIDDLEWARE = [

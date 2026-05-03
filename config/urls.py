@@ -21,6 +21,9 @@ urlpatterns = [
                 path("eda/", include("apps.eda.urls")),
                 path("viz/", include("apps.visualization.urls")),
                 path("reports/", include("apps.reports.urls")),
+                path("mlstudio/", include("apps.mlstudio.urls")),
+                path("chat/", include("apps.chat.urls")),
+                path("dashboards/", include("apps.dashboards.urls")),
             ]
         ),
     ),

@@ -3579,6 +3579,131 @@ Remove a single item from the report. The report itself is not affected.
 
 ---
 
+---
+
+## 🤖 ML Studio
+
+ML Studio provides a high-level interface for training machine learning models directly on your datasets. It supports regression, classification, and clustering tasks using Scikit-learn algorithms.
+
+**Base path**: `/api/v1/mlstudio/`
+
+### 1. List Models
+Returns all models trained by the authenticated user.
+
+- **Endpoint**: `GET /mlstudio/`
+- **Auth Required**: Yes
+- **Response (200 OK)**:
+```json
+[
+  {
+    "id": 1,
+    "name": "Revenue Forecast",
+    "task_type": "regression",
+    "algorithm": "RandomForest",
+    "status": "completed",
+    "created_at": "2026-05-02T10:00:00Z"
+  }
+]
+```
+
+---
+
+### 2. Train New Model
+Initiates a model training job. Training is performed synchronously and returns the model details upon completion.
+
+- **Endpoint**: `POST /mlstudio/`
+- **Auth Required**: Yes
+- **Request Body**:
+```json
+{
+  "name": "Revenue Forecast",
+  "dataset": 23,
+  "task_type": "regression",
+  "algorithm": "RandomForest",
+  "target_column": "Total_Price",
+  "feature_columns": ["Drug_Name", "Quantity", "Region"],
+  "hyperparameters": { "n_estimators": 100, "max_depth": 10 }
+}
+```
+
+- **Response (201 Created)**: Full model object with metrics and feature importances.
+
+---
+
+### 3. Model Detail & Prediction
+Retrieve detailed metrics or use the model to make predictions on new data.
+
+- **Retrieve Detail**: `GET /mlstudio/{id}/`
+- **Delete Model**: `DELETE /mlstudio/{id}/`
+- **Run Prediction**: `POST /mlstudio/{id}/predict/`
+  - **Request Body**: `{ "data": [{ "Drug_Name": "Aspirin", "Quantity": 5, "Region": "North" }] }`
+  - **Response**: `{ "predictions": [125.50] }`
+
+---
+
+### 4. Discover Algorithms
+Get a list of supported algorithms for a specific task type.
+
+- **Endpoint**: `GET /mlstudio/algorithms/`
+- **Query Params**: `?task_type=regression` (options: `regression`, `classification`, `clustering`)
+
+---
+
+## 💬 AI Chat on Data
+
+Interact with your datasets using natural language. The AI Chat module uses local LLMs (Ollama) to answer questions based on the schema and data context.
+
+**Base path**: `/api/v1/chat/`
+
+### 1. Sessions & History
+- **Create Session**: `POST /chat/` (Body: `{ "dataset": 23, "title": "Sales Discussion" }`)
+- **List Sessions**: `GET /chat/`
+- **Retrieve History**: `GET /chat/{id}/`
+- **Clear History**: `DELETE /chat/{id}/clear/`
+
+---
+
+### 2. Chatting (Streaming Support)
+- **Sync Message**: `POST /chat/{id}/message/` (Body: `{ "message": "What was the highest sale?" }`)
+- **Stream Message (SSE)**: `POST /chat/{id}/stream/`
+  - Streams tokens as they are generated.
+  - Final reply is persisted to the database automatically.
+
+---
+
+## 📊 Dashboard Builder
+
+Build custom interactive dashboards by arranging widgets in a 12-column grid layout.
+
+**Base path**: `/api/v1/dashboards/`
+
+### 1. Dashboard Management
+- **Create Dashboard**: `POST /dashboards/` (Body: `{ "title": "Sales Performance", "description": "Weekly overview" }`)
+- **Retrieve Dashboard**: `GET /dashboards/{id}/` (Returns full layout + widget data)
+- **Refresh Dashboard**: `POST /dashboards/{id}/refresh/` (Re-calculates all widgets)
+
+---
+
+### 2. Widget Management
+Widgets are attached to a dashboard and store their own chart parameters and grid coordinates.
+
+- **Add Widget**: `POST /dashboards/{id}/widgets/`
+  - **Request Body**:
+  ```json
+  {
+    "title": "Monthly Revenue",
+    "widget_type": "bar",
+    "dataset": 23,
+    "chart_params": { "x_col": "Month", "y_col": "Revenue", "agg": "sum" },
+    "grid_x": 0, "grid_y": 0, "grid_w": 6, "grid_h": 4
+  }
+  ```
+- **Update Layout/Params**: `PATCH /dashboards/{id}/widgets/{wid}/`
+- **Refresh Single Widget**: `POST /dashboards/{id}/widgets/{wid}/refresh/`
+- **Delete Widget**: `DELETE /dashboards/{id}/widgets/{wid}/`
+
+---
+
 ### Standard Error Format
 ```json
 {

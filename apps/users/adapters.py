@@ -4,6 +4,7 @@ and populate AuthUser model fields with Google metadata
 """
 
 import logging
+from urllib.parse import urlparse
 
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.account.adapter import DefaultAccountAdapter
@@ -11,6 +12,17 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 
 from .utils import sanitize_username
+
+_ALLOWED_PICTURE_HOSTS = {
+    "googleusercontent.com",
+    "lh1.googleusercontent.com",
+    "lh2.googleusercontent.com",
+    "lh3.googleusercontent.com",
+    "lh4.googleusercontent.com",
+    "lh5.googleusercontent.com",
+    "lh6.googleusercontent.com",
+    "googleapis.com",
+}
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -87,18 +99,28 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
 
     def _extract_google_picture(self, user, extra_data):
         picture_url = extra_data.get("picture", "")
-        if picture_url:
-            import requests
-            from django.core.files.base import ContentFile
+        if not picture_url:
+            return
 
-            try:
-                response = requests.get(picture_url, timeout=10)
-                if response.status_code == 200:
-                    # Use the filename from URL or a generic one
-                    filename = f"google_avatar_{user.email.split('@')[0]}.jpg"
-                    user.profile_picture.save(filename, ContentFile(response.content), save=False)
-            except Exception as e:
-                logger.error("Failed to download Google profile picture for %s: %s", user.email, e)
+        parsed = urlparse(picture_url)
+        host = parsed.netloc.lower()
+        allowed = any(
+            host == h or host.endswith(f".{h}") for h in _ALLOWED_PICTURE_HOSTS
+        )
+        if parsed.scheme != "https" or not allowed:
+            logger.warning("Blocked profile picture download from untrusted host: %s", host)
+            return
+
+        import requests
+        from django.core.files.base import ContentFile
+
+        try:
+            response = requests.get(picture_url, timeout=10)
+            if response.status_code == 200:
+                filename = f"google_avatar_{user.email.split('@')[0]}.jpg"
+                user.profile_picture.save(filename, ContentFile(response.content), save=False)
+        except Exception as e:
+            logger.error("Failed to download Google profile picture for %s: %s", user.email, e)
 
     def _verify_google_email(self, user, extra_data):
         if extra_data.get("verified_email", False) or extra_data.get(

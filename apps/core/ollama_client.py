@@ -1,6 +1,14 @@
 import json
+import logging
+
 import ollama
+import pandas as pd
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
+
+_SSE_DONE  = "data: [DONE]\n\n"
+_SSE_ERROR = "data: [ERROR] {}\n\n"
 
 
 class OllamaError(Exception):
@@ -9,96 +17,138 @@ class OllamaError(Exception):
 
 
 class OllamaClient:
-    """
-    Client for interacting with a local Ollama instance using the official library.
-    """
+    """Client for interacting with a local Ollama instance."""
 
     def __init__(self, model=None):
         self.model = model or getattr(settings, "OLLAMA_MODEL", "qwen2.5:7b")
 
     def generate_response(self, prompt, system_prompt=None):
-        """
-        Sends a prompt to Ollama and returns the full generated text.
-        """
         try:
-            kwargs = {
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False,
-            }
+            kwargs = {"model": self.model, "prompt": prompt, "stream": False}
             if system_prompt:
                 kwargs["system"] = system_prompt
-
             response = ollama.generate(**kwargs)
             return response.response
-        except Exception as e:
-            raise OllamaError(f"Failed to connect to Ollama: {str(e)}")
+        except Exception as exc:
+            raise OllamaError(f"Failed to connect to Ollama: {exc}") from exc
 
     def stream_response(self, prompt, system_prompt=None):
-        """
-        Streams tokens from Ollama as a generator of plain text chunks.
-        Yields each token string as it arrives.
-        """
         try:
-            kwargs = {
-                "model": self.model,
-                "prompt": prompt,
-                "stream": True,
-            }
+            kwargs = {"model": self.model, "prompt": prompt, "stream": True}
             if system_prompt:
                 kwargs["system"] = system_prompt
-
             for chunk in ollama.generate(**kwargs):
                 token = chunk.response
                 if token:
                     yield token
-        except Exception as e:
-            raise OllamaError(f"Failed to connect to Ollama: {str(e)}")
+        except Exception as exc:
+            raise OllamaError(f"Failed to connect to Ollama: {exc}") from exc
 
+
+# ── SSE helpers ────────────────────────────────────────────────────────────────
+
+def _sse_stream(client: OllamaClient, prompt: str, system_prompt: str):
+    """Shared SSE generator: yields token chunks then DONE or ERROR."""
+    try:
+        for token in client.stream_response(prompt, system_prompt=system_prompt):
+            yield f"data: {token.replace(chr(10), chr(92) + 'n')}\n\n"
+        yield _SSE_DONE
+    except OllamaError as exc:
+        yield _SSE_ERROR.format(exc)
+
+
+# ── Problem Framing ────────────────────────────────────────────────────────────
 
 def frame_problem(columns, sample_stats=None):
-    """
-    Returns the full Problem Framing result as a single string (non-streaming).
-    """
     client = OllamaClient()
     system_prompt, prompt = _build_prompt(columns, sample_stats)
     return client.generate_response(prompt, system_prompt=system_prompt)
 
 
 def stream_frame_problem(columns, sample_stats=None):
-    """
-    Yields SSE-formatted data chunks for streaming to the client.
-    Format: data: <token>\n\n
-    A final data: [DONE]\n\n signals end of stream.
-    """
+    """Yields SSE chunks for problem framing."""
     client = OllamaClient()
     system_prompt, prompt = _build_prompt(columns, sample_stats)
-
-    try:
-        for token in client.stream_response(prompt, system_prompt=system_prompt):
-            # Escape newlines so SSE stays valid
-            safe_token = token.replace("\n", "\\n")
-            yield f"data: {safe_token}\n\n"
-        yield "data: [DONE]\n\n"
-    except OllamaError as e:
-        yield f"data: [ERROR] {str(e)}\n\n"
+    yield from _sse_stream(client, prompt, system_prompt)
 
 
 def stream_suggest_questions(columns, problem_statement=""):
-    """
-    Streams Q1, Q2, Q3... analytical questions as SSE chunks.
-    Questions are generated from dataset column names and an optional problem statement.
-    """
+    """Streams Q1, Q2, Q3… analytical questions as SSE chunks."""
     client = OllamaClient()
     system_prompt, prompt = _build_suggest_prompt(columns, problem_statement)
-    try:
-        for token in client.stream_response(prompt, system_prompt=system_prompt):
-            safe_token = token.replace("\n", "\\n")
-            yield f"data: {safe_token}\n\n"
-        yield "data: [DONE]\n\n"
-    except OllamaError as e:
-        yield f"data: [ERROR] {str(e)}\n\n"
+    yield from _sse_stream(client, prompt, system_prompt)
 
+
+# ── AI Chat on Data ────────────────────────────────────────────────────────────
+
+def build_dataset_context(df: pd.DataFrame, dataset_name: str = "", max_rows: int = 5) -> str:
+    """
+    Build a compact dataset context string to inject into chat system prompts.
+    Includes column dtypes, descriptive stats for numeric columns, and sample rows.
+    """
+    lines = []
+    if dataset_name:
+        lines.append(f"Dataset: {dataset_name}")
+    lines.append(f"Shape: {len(df)} rows × {len(df.columns)} columns\n")
+
+    lines.append("Columns:")
+    for col in df.columns:
+        null_pct = round(df[col].isna().mean() * 100, 1)
+        lines.append(f"  - {col} ({df[col].dtype}) — {null_pct}% null")
+
+    num_df = df.select_dtypes(include="number")
+    if not num_df.empty:
+        lines.append("\nNumeric summary (mean | std | min | max):")
+        for col in num_df.columns:
+            s = num_df[col].describe()
+            lines.append(
+                f"  {col}: mean={s['mean']:.3g} std={s['std']:.3g} "
+                f"min={s['min']:.3g} max={s['max']:.3g}"
+            )
+
+    sample = df.head(max_rows).fillna("").astype(str)
+    lines.append(f"\nSample rows (first {min(max_rows, len(df))}):")
+    lines.append(sample.to_string(index=False))
+
+    return "\n".join(lines)
+
+
+def chat_about_data(dataset_context: str, conversation_history: list[dict], user_message: str) -> str:
+    """Single-shot chat turn. Returns the full assistant reply."""
+    client = OllamaClient()
+    prompt = f"{_format_history(conversation_history)}User: {user_message}\nAssistant:"
+    return client.generate_response(prompt, system_prompt=_build_chat_system_prompt(dataset_context))
+
+
+def stream_chat_about_data(dataset_context: str, conversation_history: list[dict], user_message: str):
+    """Streaming chat turn. Yields SSE-formatted chunks."""
+    client = OllamaClient()
+    prompt = f"{_format_history(conversation_history)}User: {user_message}\nAssistant:"
+    yield from _sse_stream(client, prompt, _build_chat_system_prompt(dataset_context))
+
+
+def _build_chat_system_prompt(dataset_context: str) -> str:
+    return (
+        "You are PyAnalypt, an expert AI data analyst assistant. "
+        "You help users understand and analyze their data through conversation.\n\n"
+        "Dataset context:\n"
+        f"{dataset_context}\n\n"
+        "Answer questions clearly and concisely. Reference actual column names. "
+        "Suggest EDA operations, transformations, or visualizations when relevant."
+    )
+
+
+def _format_history(history: list[dict]) -> str:
+    if not history:
+        return ""
+    lines = [
+        f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+        for m in history[-10:]  # cap at 10 turns to stay within context window
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# ── Internal prompt builders ───────────────────────────────────────────────────
 
 def _build_suggest_prompt(columns, problem_statement=""):
     system_prompt = (

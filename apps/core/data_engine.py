@@ -36,7 +36,7 @@ def get_cached_dataframe(dataset_id, file_path, file_format, version=None):
     if df is not None:
         try:
             buf = io.BytesIO()
-            df.to_parquet(buf, index=True)
+            df.to_parquet(buf, index=True, compression="snappy")
             cache.set(key, buf.getvalue(), timeout=settings.DATAFRAME_CACHE_TTL)
         except Exception:
             logger.warning("df cache set failed for dataset %s — serving uncached", dataset_id)
@@ -970,7 +970,7 @@ def eda_crosstab(df, col_a, col_b, normalize=False):
     index_vals = [str(v) for v in ct.index.tolist()]
     col_vals = [str(v) for v in ct.columns.tolist()]
     table = []
-    for idx_val, row in zip(index_vals, ct.values.tolist()):
+    for idx_val, row in zip(index_vals, ct.to_numpy().tolist()):
         table.append({
             col_a: idx_val,
             **{str(c): (round(float(v), 4) if normalize else int(v)) for c, v in zip(col_vals, row)},
@@ -1024,6 +1024,23 @@ def eda_outlier_summary(df, method="iqr", threshold=1.5):
     }
 
 
+def _compute_co_null_pairs(null_matrix, null_cols):
+    """Helper to compute pairs of columns that tend to be null together."""
+    co_null = {}
+    if len(null_cols) < 2:
+        return co_null
+
+    co_null_corr = null_matrix[null_cols].corr().round(3)
+    for col_a in null_cols:
+        for col_b in null_cols:
+            if col_a >= col_b:
+                continue
+            val = co_null_corr.at[col_a, col_b]
+            if not pd.isna(val) and abs(val) >= 0.5:
+                co_null[f"{col_a} × {col_b}"] = float(val)
+    return co_null
+
+
 def eda_missing_heatmap(df):
     """
     Null pattern analysis: per-column null counts, rows with the most nulls,
@@ -1041,27 +1058,15 @@ def eda_missing_heatmap(df):
     }
 
     row_null_counts = null_matrix.sum(axis=1)
-    worst_rows = (
-        row_null_counts[row_null_counts > 0]
-        .sort_values(ascending=False)
-        .head(10)
-    )
+    worst_rows = row_null_counts[row_null_counts > 0].sort_values(ascending=False).head(10)
+    
     worst_rows_list = [
         {"row_index": int(idx), "null_count": int(cnt)}
         for idx, cnt in worst_rows.items()
     ]
 
     null_cols = [c for c in df.columns if null_matrix[c].any()]
-    co_null = {}
-    if len(null_cols) >= 2:
-        co_null_corr = null_matrix[null_cols].corr().round(3)
-        for col_a in null_cols:
-            for col_b in null_cols:
-                if col_a >= col_b:
-                    continue
-                val = co_null_corr.at[col_a, col_b]
-                if not pd.isna(val) and abs(val) >= 0.5:
-                    co_null[f"{col_a} × {col_b}"] = float(val)
+    co_null = _compute_co_null_pairs(null_matrix, null_cols)
 
     return {
         "total_rows": total_rows,

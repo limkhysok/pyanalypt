@@ -1,3 +1,8 @@
+import base64
+import hashlib
+
+from cryptography.fernet import Fernet, InvalidToken
+
 from django.conf import settings
 from django.db import models
 from django.core.validators import RegexValidator, MinLengthValidator
@@ -5,6 +10,43 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils import timezone
 
 from .utils import validate_birthday_not_future
+
+
+def _fernet() -> Fernet:
+    key = base64.urlsafe_b64encode(hashlib.sha256(settings.SECRET_KEY.encode()).digest())
+    return Fernet(key)
+
+
+def _encrypt_secret(value: str) -> str:
+    if not value:
+        return value
+    try:
+        _fernet().decrypt(value.encode())
+        return value  # already encrypted
+    except (InvalidToken, Exception):
+        return _fernet().encrypt(value.encode()).decode()
+
+
+def _decrypt_secret(value: str) -> str:
+    if not value:
+        return value
+    try:
+        return _fernet().decrypt(value.encode()).decode()
+    except (InvalidToken, Exception):
+        return value  # graceful fallback for legacy plaintext values
+
+
+class EncryptedCharField(models.CharField):
+    """CharField that transparently encrypts on write and decrypts on read."""
+
+    def from_db_value(self, value, expression, connection):
+        return _decrypt_secret(value)
+
+    def get_prep_value(self, value):
+        return _encrypt_secret(super().get_prep_value(value))
+
+    def to_python(self, value):
+        return _decrypt_secret(value) if value else value
 
 
 class AuthUserManager(BaseUserManager):
@@ -85,9 +127,7 @@ class AuthUser(AbstractUser):
     )
 
     # ── Two-Factor Authentication ────────────────────────────────────────────
-    # totp_secret is generated during setup and stored until 2FA is disabled.
-    # Store encrypted at rest in production (e.g. via django-encrypted-fields).
-    totp_secret = models.CharField(max_length=64, blank=True, default="")
+    totp_secret = EncryptedCharField(max_length=256, blank=True, default="")
     totp_enabled = models.BooleanField(default=False)
 
     birthday = models.DateField(

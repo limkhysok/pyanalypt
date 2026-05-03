@@ -11,6 +11,27 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 
 from apps.datasets.models import Dataset, DatasetActivityLog
+from .serializers import (
+    CastColumnsSerializer,
+    UpdateCellSerializer,
+    RenameColumnSerializer,
+    DropDuplicatesSerializer,
+    ReplaceValuesSerializer,
+    DropNullsSerializer,
+    FillNullsSerializer,
+    FormulaSerializer,
+    AddColumnSerializer,
+    OutlierParamsSerializer,
+    ImputeOutliersSerializer,
+    CapOutliersSerializer,
+    TransformColumnSerializer,
+    DropColumnsSerializer,
+    FilterRowsSerializer,
+    CleanStringSerializer,
+    ScaleColumnsSerializer,
+    ExtractDatetimeSerializer,
+    EncodeColumnsSerializer,
+)
 from apps.core.data_engine import (
     _df_cache_key,
     get_cached_dataframe,
@@ -77,7 +98,7 @@ def _commit_mutation(df, dataset, user, action, details, extra_save_fields=None)
 
     try:
         buf = io.BytesIO()
-        df.to_parquet(buf, index=True)
+        df.to_parquet(buf, index=True, compression="snappy")
         key = _df_cache_key(dataset.id, dataset.updated_date)
         cache.set(key, buf.getvalue(), timeout=settings.DATAFRAME_CACHE_TTL)
     except Exception as e:
@@ -116,7 +137,7 @@ def _format_size(size_bytes):
 
 
 _DEDUP_MODES = ("all_first", "all_last", "subset_keep", "drop_all")
-_ONE_HOT_MAX_CARDINALITY = 50
+_ONE_HOT_MAX_CARDINALITY = 15
 
 
 def _validate_dedup_params(mode, subset, keep):
@@ -461,21 +482,10 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def cast_columns(self, request, dataset_id=None):
         """POST /datalab/cast/{dataset_id}/"""
-        casts = request.data.get("casts")
-        if not casts or not isinstance(casts, dict):
-            return Response(
-                {"detail": "Provide a 'casts' object mapping column names to target types."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        invalid_types = [t for t in casts.values() if t not in SUPPORTED_CASTS]
-        if invalid_types:
-            return Response(
-                {"detail": f"Unsupported types: {invalid_types}. Supported: {sorted(SUPPORTED_CASTS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        force = request.data.get("force", False)
+        s = CastColumnsSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        casts = s.validated_data["casts"]
+        force = s.validated_data["force"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -524,20 +534,11 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def update_cell(self, request, dataset_id=None):
         """PATCH /datalab/update-cell/{dataset_id}/"""
-        row_index = request.data.get("row_index")
-        column = request.data.get("column", "").strip()
-        value = request.data.get("value")
-
-        if row_index is None or not column:
-            return Response(
-                {"detail": "'row_index' and 'column' are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if not isinstance(row_index, int) or row_index < 0:
-            return Response(
-                {"detail": "'row_index' must be a non-negative integer."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = UpdateCellSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        row_index = s.validated_data["row_index"]
+        column = s.validated_data["column"].strip()
+        value = s.validated_data["value"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -573,19 +574,10 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def rename_column(self, request, dataset_id=None):
         """POST /datalab/rename-column/{dataset_id}/"""
-        old_name = request.data.get("old_name", "").strip()
-        new_name = request.data.get("new_name", "").strip()
-
-        if not old_name or not new_name:
-            return Response(
-                {"detail": "'old_name' and 'new_name' are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if old_name == new_name:
-            return Response(
-                {"detail": "New name is identical to the current name."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = RenameColumnSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        old_name = s.validated_data["old_name"].strip()
+        new_name = s.validated_data["new_name"].strip()
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -620,13 +612,11 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def drop_duplicates(self, request, dataset_id=None):
         """POST /datalab/drop-duplicates/{dataset_id}/"""
-        mode = request.data.get("mode", "all_first")
-        subset = request.data.get("subset")
-        keep = request.data.get("keep", "first")
-
-        err_msg = _validate_dedup_params(mode, subset, keep)
-        if err_msg:
-            return Response({"detail": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+        s = DropDuplicatesSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        mode = s.validated_data["mode"]
+        subset = s.validated_data.get("subset")
+        keep = s.validated_data.get("keep", "first")
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -659,23 +649,10 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def replace_values(self, request, dataset_id=None):
         """POST /datalab/replace-values/{dataset_id}/"""
-        replacements = request.data.get("replacements")
-        columns = request.data.get("columns")
-
-        if not replacements or not isinstance(replacements, dict):
-            return Response(
-                {"detail": "'replacements' must be an object mapping old values to new values."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if columns is None and not request.data.get("confirm_global", False):
-            return Response(
-                {"detail": (
-                    "'columns' is required. To replace values across all columns, "
-                    "pass 'confirm_global: true' to confirm the intent."
-                )},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = ReplaceValuesSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        replacements = s.validated_data["replacements"]
+        columns = s.validated_data.get("columns")
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -719,14 +696,12 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def drop_nulls(self, request, dataset_id=None):
         """POST /datalab/drop-nulls/{dataset_id}/"""
-        axis = request.data.get("axis", "rows")
-        how = request.data.get("how", "any")
-        subset = request.data.get("subset")
-        thresh_pct = request.data.get("thresh_pct")
-
-        err_msg = _validate_drop_nulls_params(axis, how, thresh_pct)
-        if err_msg:
-            return Response({"detail": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+        s = DropNullsSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        axis = s.validated_data["axis"]
+        how = s.validated_data.get("how", "any")
+        subset = s.validated_data.get("subset")
+        thresh_pct = s.validated_data.get("thresh_pct")
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -817,20 +792,11 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def fill_nulls(self, request, dataset_id=None):
         """POST /datalab/fill-nulls/{dataset_id}/"""
-        strategy = str(request.data.get("strategy", "")).strip()
-        columns = request.data.get("columns")
-        value = request.data.get("value")
-
-        if strategy not in FILL_STRATEGIES:
-            return Response(
-                {"detail": f"'strategy' must be one of: {sorted(FILL_STRATEGIES)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if strategy == "constant" and value is None:
-            return Response(
-                {"detail": "'value' is required when strategy is 'constant'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = FillNullsSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        strategy = s.validated_data["strategy"]
+        columns = s.validated_data.get("columns")
+        value = s.validated_data.get("value")
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -861,26 +827,11 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def trim_outliers(self, request, dataset_id=None):
         """POST /datalab/trim-outliers/{dataset_id}/"""
-        columns_raw = request.data.get("columns")
-        method = request.data.get("method", "iqr")
-        threshold_raw = request.data.get("threshold", 1.5)
-
-        if method not in OUTLIER_METHODS:
-            return Response(
-                {"detail": f"'method' must be one of: {sorted(OUTLIER_METHODS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            threshold = float(threshold_raw)
-            if threshold <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response({"detail": _INVALID_THRESHOLD}, status=status.HTTP_400_BAD_REQUEST)
-        if threshold > _MAX_OUTLIER_THRESHOLD:
-            return Response(
-                {"detail": f"'threshold' must be ≤ {_MAX_OUTLIER_THRESHOLD}."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = OutlierParamsSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        columns_raw = s.validated_data["columns"]
+        method = s.validated_data["method"]
+        threshold = s.validated_data["threshold"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -914,32 +865,12 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def impute_outliers(self, request, dataset_id=None):
         """POST /datalab/impute-outliers/{dataset_id}/"""
-        columns_raw = request.data.get("columns")
-        method = request.data.get("method", "iqr")
-        threshold_raw = request.data.get("threshold", 1.5)
-        strategy = request.data.get("strategy", "median")
-
-        if method not in OUTLIER_METHODS:
-            return Response(
-                {"detail": f"'method' must be one of: {sorted(OUTLIER_METHODS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if strategy not in OUTLIER_IMPUTE_STRATEGIES:
-            return Response(
-                {"detail": f"'strategy' must be one of: {sorted(OUTLIER_IMPUTE_STRATEGIES)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            threshold = float(threshold_raw)
-            if threshold <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response({"detail": _INVALID_THRESHOLD}, status=status.HTTP_400_BAD_REQUEST)
-        if threshold > _MAX_OUTLIER_THRESHOLD:
-            return Response(
-                {"detail": f"'threshold' must be ≤ {_MAX_OUTLIER_THRESHOLD}."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = ImputeOutliersSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        columns_raw = s.validated_data["columns"]
+        method = s.validated_data["method"]
+        threshold = s.validated_data["threshold"]
+        strategy = s.validated_data["strategy"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -971,20 +902,11 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def cap_outliers(self, request, dataset_id=None):
         """POST /datalab/cap-outliers/{dataset_id}/"""
-        columns_raw = request.data.get("columns")
-        lower_pct_raw = request.data.get("lower_pct", 5.0)
-        upper_pct_raw = request.data.get("upper_pct", 95.0)
-
-        try:
-            lower_pct = float(lower_pct_raw)
-            upper_pct = float(upper_pct_raw)
-            if not (0 <= lower_pct < upper_pct <= 100):
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response(
-                {"detail": "'lower_pct' and 'upper_pct' must be numbers where 0 <= lower_pct < upper_pct <= 100."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = CapOutliersSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        columns_raw = s.validated_data["columns"]
+        lower_pct = s.validated_data["lower_pct"]
+        upper_pct = s.validated_data["upper_pct"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -1013,14 +935,10 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def transform_column(self, request, dataset_id=None):
         """POST /datalab/transform-column/{dataset_id}/"""
-        columns_raw = request.data.get("columns")
-        function = request.data.get("function", "log")
-
-        if function not in COLUMN_TRANSFORMS:
-            return Response(
-                {"detail": f"'function' must be one of: {list(COLUMN_TRANSFORMS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = TransformColumnSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        columns_raw = s.validated_data["columns"]
+        function = s.validated_data["function"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -1049,12 +967,9 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def drop_columns(self, request, dataset_id=None):
         """POST /datalab/drop-columns/{dataset_id}/"""
-        columns = request.data.get("columns")
-        if not isinstance(columns, list) or not columns:
-            return Response(
-                {"detail": "'columns' must be a non-empty list of column names."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = DropColumnsSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        columns = s.validated_data["columns"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -1084,21 +999,12 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def add_column(self, request, dataset_id=None):
         """POST /datalab/add-column/{dataset_id}/"""
-        new_name = request.data.get("new_name", "").strip()
-        formula = request.data.get("formula", "").strip()
-        operand_a = request.data.get("operand_a", "").strip()
-        operand_b = request.data.get("operand_b", "").strip()
-
-        if not all([new_name, formula, operand_a, operand_b]):
-            return Response(
-                {"detail": "'new_name', 'formula', 'operand_a', and 'operand_b' are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if formula not in SUPPORTED_FORMULAS:
-            return Response(
-                {"detail": f"Invalid 'formula'. Choose one of: {list(SUPPORTED_FORMULAS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = AddColumnSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        new_name = s.validated_data["new_name"].strip()
+        formula = s.validated_data["formula"]
+        operand_a = s.validated_data["operand_a"].strip()
+        operand_b = s.validated_data["operand_b"].strip()
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -1140,25 +1046,11 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def filter_rows(self, request, dataset_id=None):
         """POST /datalab/filter-rows/{dataset_id}/"""
-        column = request.data.get("column", "").strip()
-        operator = request.data.get("operator", "").strip()
-        value = request.data.get("value")
-
-        if not column or not operator:
-            return Response(
-                {"detail": "'column' and 'operator' are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if operator not in FILTER_OPERATORS:
-            return Response(
-                {"detail": f"Invalid 'operator'. Choose one of: {list(FILTER_OPERATORS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if operator not in ("isnull", "notnull") and value is None:
-            return Response(
-                {"detail": f"'value' is required for operator '{operator}'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = FilterRowsSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        column = s.validated_data["column"].strip()
+        operator = s.validated_data["operator"]
+        value = s.validated_data.get("value")
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -1200,19 +1092,10 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def clean_string(self, request, dataset_id=None):
         """POST /datalab/clean-string/{dataset_id}/"""
-        columns = request.data.get("columns")
-        operation = request.data.get("operation", "").strip()
-
-        if not isinstance(columns, list) or not columns:
-            return Response(
-                {"detail": "'columns' must be a non-empty list."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if operation not in STRING_OPERATIONS:
-            return Response(
-                {"detail": f"'operation' must be one of: {list(STRING_OPERATIONS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = CleanStringSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        columns = s.validated_data["columns"]
+        operation = s.validated_data["operation"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -1258,14 +1141,10 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def scale_columns(self, request, dataset_id=None):
         """POST /datalab/scale-columns/{dataset_id}/"""
-        columns_raw = request.data.get("columns")
-        method = request.data.get("method", "minmax")
-
-        if method not in SCALE_METHODS:
-            return Response(
-                {"detail": f"'method' must be one of: {list(SCALE_METHODS)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = ScaleColumnsSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        columns_raw = s.validated_data["columns"]
+        method = s.validated_data["method"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -1294,22 +1173,10 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def extract_datetime(self, request, dataset_id=None):
         """POST /datalab/extract-datetime/{dataset_id}/"""
-        column = request.data.get("column", "").strip()
-        features = request.data.get("features")
-
-        if not column:
-            return Response({"detail": "'column' is required."}, status=status.HTTP_400_BAD_REQUEST)
-        if not isinstance(features, list) or not features:
-            return Response(
-                {"detail": f"'features' must be a non-empty list. Valid values: {list(DATETIME_FEATURES)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        invalid_feats = [f for f in features if f not in DATETIME_FEATURES]
-        if invalid_feats:
-            return Response(
-                {"detail": f"Invalid features: {invalid_feats}. Choose from: {list(DATETIME_FEATURES)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = ExtractDatetimeSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        column = s.validated_data["column"].strip()
+        features = s.validated_data["features"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
@@ -1340,19 +1207,10 @@ class DatalabViewSet(viewsets.ViewSet):
 
     def encode_columns(self, request, dataset_id=None):
         """POST /datalab/encode-columns/{dataset_id}/"""
-        columns = request.data.get("columns")
-        strategy = request.data.get("strategy", "label")
-
-        if not isinstance(columns, list) or not columns:
-            return Response(
-                {"detail": "'columns' must be a non-empty list."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if strategy not in ENCODE_STRATEGIES:
-            return Response(
-                {"detail": f"'strategy' must be one of: {list(ENCODE_STRATEGIES)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        s = EncodeColumnsSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        columns = s.validated_data["columns"]
+        strategy = s.validated_data["strategy"]
 
         with transaction.atomic():
             err, dataset, df = _load_and_lock(dataset_id, request.user)
