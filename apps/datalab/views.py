@@ -1,5 +1,6 @@
 import io
 import logging
+import os
 
 import pandas as pd
 
@@ -7,10 +8,13 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.core.files.base import ContentFile
 from rest_framework import viewsets, permissions, status
+from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from apps.datasets.models import Dataset, DatasetActivityLog
+from apps.datasets.models import Dataset, DatasetActivityLog, DatasetSnapshot
 from .serializers import (
     CastColumnsSerializer,
     UpdateCellSerializer,
@@ -83,12 +87,33 @@ _MAX_PREVIEW_LIMIT = 10_000
 _MAX_OUTLIER_THRESHOLD = 10
 
 
-def _commit_mutation(df, dataset, user, action, details, extra_save_fields=None):
+def _commit_mutation(df, dataset, user, action, details, extra_save_fields=None, create_snapshot=True):
     """
     Persist df → disk, update dataset metadata, pre-warm versioned cache, write activity log.
+    Optionally creates a snapshot of the state PRIOR to this mutation.
     Must be called inside transaction.atomic().
-    Raises RuntimeError on file-write failure so the surrounding transaction rolls back.
     """
+    log = DatasetActivityLog.objects.create(
+        user=user,
+        dataset=dataset,
+        dataset_name_snap=dataset.file_name,
+        action=action,
+        details=details,
+    )
+
+    if create_snapshot and dataset.file and os.path.exists(dataset.file.path):
+        try:
+            snapshot = DatasetSnapshot(dataset=dataset, activity_log=log)
+            with open(dataset.file.path, "rb") as f:
+                snapshot.file.save(
+                    f"snap_{dataset.id}_{timezone.now().strftime('%y%m%d%H%M%S')}.{dataset.file_format}",
+                    ContentFile(f.read()),
+                    save=False,
+                )
+            snapshot.save()
+        except Exception as e:
+            logger.warning("Failed to create snapshot for dataset %s: %s", dataset.id, e)
+
     if not save_dataframe(df, dataset.file.path, dataset.file_format):
         raise RuntimeError(_SAVE_FAILED)
 
@@ -103,14 +128,6 @@ def _commit_mutation(df, dataset, user, action, details, extra_save_fields=None)
         cache.set(key, buf.getvalue(), timeout=settings.DATAFRAME_CACHE_TTL)
     except Exception as e:
         logger.warning("df cache pre-warm failed for dataset %s: %s", dataset.id, e)
-
-    DatasetActivityLog.objects.create(
-        user=user,
-        dataset=dataset,
-        dataset_name_snap=dataset.file_name,
-        action=action,
-        details=details,
-    )
 
 
 def _validate_casts(df, casts):
@@ -475,6 +492,67 @@ class DatalabViewSet(viewsets.ViewSet):
             "operand_b": operand_b,
             **result,
         })
+
+    @action(detail=True, methods=["post"])
+    def revert(self, request, dataset_id=None):
+        """
+        POST /datalab/revert/{dataset_id}/
+        Body: { "snapshot_id": <int> } or { "undo": true }
+        Replaces current file with a previous snapshot.
+        """
+        snapshot_id = request.data.get("snapshot_id")
+        undo = request.data.get("undo", False)
+
+        with transaction.atomic():
+            dataset = get_object_or_404(Dataset.objects.select_for_update(), pk=dataset_id, user=request.user)
+            
+            if undo:
+                snapshot = dataset.snapshots.first()
+                if not snapshot:
+                    return Response({"detail": "No snapshots available to undo."}, status=status.HTTP_400_BAD_REQUEST)
+            elif snapshot_id:
+                snapshot = get_object_or_404(dataset.snapshots, pk=snapshot_id)
+            else:
+                return Response({"detail": "Either 'snapshot_id' or 'undo: true' is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # 1. Create a "Safety Snapshot" of the state we are about to overwrite?
+            # Probably not needed for a simple Revert, but let's do it for consistency
+            # if we want a complete "History" that can go back and forth.
+            # For now, let's just revert.
+
+            # 2. Overwrite current file with snapshot file
+            try:
+                with open(snapshot.file.path, "rb") as sf:
+                    with open(dataset.file.path, "wb") as df:
+                        df.write(sf.read())
+            except Exception as e:
+                logger.error("Failed to restore snapshot file: %s", e)
+                return Response({"detail": "System error during file restoration."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            # 3. Clear cache and update metadata
+            from apps.core.data_engine import invalidate_dataframe_cache
+            invalidate_dataframe_cache(dataset.id)
+            
+            dataset.file_size = dataset.file.size
+            dataset.save(update_fields=["file_size", "updated_date"])
+
+            # 4. Log the revert action (don't create a snapshot of the revert itself)
+            DatasetActivityLog.objects.create(
+                user=request.user,
+                dataset=dataset,
+                dataset_name_snap=dataset.file_name,
+                action="REVERT",
+                details={"snapshot_id": snapshot.id, "was_undo": undo},
+            )
+
+            # 5. Delete the snapshot we just used? 
+            # If it was an "Undo", typically yes. If it was a "Revert to specific point", maybe no.
+            # Let's keep it for now.
+
+            return Response({
+                "detail": "Dataset reverted successfully.",
+                "updated_at": dataset.updated_date,
+            })
 
     # ------------------------------------------------------------------ #
     # Mutating endpoints — all wrapped in transaction.atomic()            #

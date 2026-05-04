@@ -133,3 +133,39 @@ class DatasetActivityLog(models.Model):
     def __str__(self):
         user_str = self.user.username if self.user else "System"
         return f"{user_str} - {self.action} on {self.dataset_name_snap}"
+
+
+class DatasetSnapshot(models.Model):
+    """
+    Model representing a point-in-time snapshot of a dataset.
+    Used for Undo/Revert functionality.
+    """
+
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name="snapshots",
+    )
+    file = models.FileField(upload_to="snapshots/%Y/%m/%d/")
+    activity_log = models.OneToOneField(
+        DatasetActivityLog,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="snapshot",
+    )
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-timestamp"]
+        verbose_name = "Dataset Snapshot"
+        verbose_name_plural = "Dataset Snapshots"
+
+    def __str__(self):
+        return f"Snapshot of {self.dataset.file_name} at {self.timestamp}"
+
+
+@receiver(pre_delete, sender=DatasetSnapshot)
+def snapshot_delete(sender, instance, **kwargs):
+    if instance.file:
+        instance.file.delete(save=False)

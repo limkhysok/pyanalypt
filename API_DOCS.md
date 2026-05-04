@@ -787,6 +787,7 @@ Retrieve a stream of activities performed on datasets.
 | `EXTRACT_DATETIME` | Extract datetime features | `{ source_column, added_columns }` |
 | `ENCODE_COLUMNS` | Encode categorical columns | `{ strategy, columns }` |
 | `NORMALIZE_COLUMN_NAMES` | Normalize column headers | `{ renamed }` |
+| `REVERT` | Revert to snapshot | `{ snapshot_id, was_undo }` |
 
 ---
 
@@ -824,6 +825,7 @@ All endpoints below are under `/api/v1/datalab/`.
 | 24 | `POST` | `/datalab/extract-datetime/{dataset_id}/` | Extract year/month/day/weekday/hour/minute from a datetime column into new columns |
 | 25 | `POST` | `/datalab/encode-columns/{dataset_id}/` | Encode categorical columns as integers (label) or binary indicators (one-hot) |
 | 26 | `POST` | `/datalab/normalize-column-names/{dataset_id}/` | Rename all column headers to `lowercase_snake_case` |
+| 27 | `POST` | `/datalab/revert/{dataset_id}/` | Revert to a previous snapshot or undo the last mutation |
 
 ---
 
@@ -2656,6 +2658,63 @@ Rename all column headers to `lowercase_snake_case` — removes spaces, special 
 > `columns` is the full updated list in order — use it to refresh the column display.
 > Special characters (spaces, `$`, `%`, `-`, etc.) are replaced with `_`. Leading/trailing underscores are stripped.
 > Run this early in the cleaning pipeline — normalized names make all subsequent operations less error-prone.
+
+---
+
+### 27. Revert to Snapshot (Undo)
+
+Replaces the current dataset file with a previous snapshot. This is used for "Undo" functionality (reverting the last mutation) or restoring the dataset to a specific point in time.
+
+- **Endpoint**: `POST /datalab/revert/{dataset_id}/`
+- **Auth Required**: Yes
+
+#### Request Body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `undo` | boolean | No | If `true`, reverts to the most recent snapshot (the state before the last mutation) |
+| `snapshot_id` | int | No | Revert to a specific snapshot by ID. |
+
+> One of `undo: true` or `snapshot_id` must be provided.
+
+**Perform "Undo":**
+```json
+{
+  "undo": true
+}
+```
+
+**Revert to specific snapshot:**
+```json
+{
+  "snapshot_id": 42
+}
+```
+
+#### Responses
+
+- **Response (200 OK)**:
+```json
+{
+  "detail": "Dataset reverted successfully.",
+  "updated_at": "2026-05-04T08:15:00Z"
+}
+```
+
+- **Response (400)** — no snapshots to undo:
+```json
+{ "detail": "No snapshots available to undo." }
+```
+
+- **Response (404)** — snapshot not found:
+```json
+{ "detail": "Not found." }
+```
+
+> **How Snapshots work**: PyAnalypt automatically creates a snapshot of the dataset **before** every mutating operation (Clean, Cast, Drop, etc.). These snapshots are stored as separate files. 
+> Reverting overwrites the current file and invalidates the data cache.
+> The `REVERT` action is logged in the activity logs.
+
 
 ---
 
