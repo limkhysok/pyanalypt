@@ -9,6 +9,7 @@ crosstab         = EDAViewSet.as_view({"get": "crosstab"})
 outlier_summary  = EDAViewSet.as_view({"get": "outlier_summary"})
 missing_heatmap  = EDAViewSet.as_view({"get": "missing_heatmap"})
 pairwise         = EDAViewSet.as_view({"get": "pairwise"})
+association      = EDAViewSet.as_view({"get": "association"})
 
 urlpatterns = [
     path("correlation/<int:dataset_id>/",     correlation,     name="eda-correlation"),
@@ -18,4 +19,5 @@ urlpatterns = [
     path("outlier-summary/<int:dataset_id>/", outlier_summary, name="eda-outlier-summary"),
     path("missing-heatmap/<int:dataset_id>/", missing_heatmap, name="eda-missing-heatmap"),
     path("pairwise/<int:dataset_id>/",        pairwise,        name="eda-pairwise"),
+    path("association/<int:dataset_id>/",     association,     name="eda-association"),
 ]

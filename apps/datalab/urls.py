@@ -27,6 +27,7 @@ scale_columns = DatalabViewSet.as_view({"post": "scale_columns"})
 extract_datetime = DatalabViewSet.as_view({"post": "extract_datetime"})
 encode_columns = DatalabViewSet.as_view({"post": "encode_columns"})
 normalize_column_names = DatalabViewSet.as_view({"post": "normalize_column_names"})
+revert = DatalabViewSet.as_view({"post": "revert"})
 
 urlpatterns = [
     path("preview/<int:dataset_id>/", preview, name="datalab-preview"),
@@ -55,4 +56,5 @@ urlpatterns = [
     path("extract-datetime/<int:dataset_id>/", extract_datetime, name="datalab-extract-datetime"),
     path("encode-columns/<int:dataset_id>/", encode_columns, name="datalab-encode-columns"),
     path("normalize-column-names/<int:dataset_id>/", normalize_column_names, name="datalab-normalize-column-names"),
+    path("revert/<int:dataset_id>/", revert, name="datalab-revert"),
 ]

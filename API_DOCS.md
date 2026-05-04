@@ -2757,7 +2757,35 @@ Compute pairwise correlation coefficients between numeric columns.
 
 ---
 
-### 2. Distribution
+### 2. Categorical Association (Cramér's V)
+
+Compute the strength of association between categorical columns using Cramér's V (ranges from 0 to 1). Useful for identifying relationships between non-numeric features.
+
+- **Endpoint**: `GET /eda/association/{dataset_id}/`
+- **Auth Required**: Yes
+- **Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `columns` | list | all categorical | Column names to include (repeatable) |
+
+#### Response (200 OK)
+```json
+{
+  "columns": ["department", "gender", "performance_rating"],
+  "method": "cramers_v",
+  "matrix": [
+    {"column": "department", "values": {"department": 1.0, "gender": 0.12, "performance_rating": 0.45}},
+    {"column": "gender",     "values": {"department": 0.12, "gender": 1.0, "performance_rating": 0.05}}
+  ]
+}
+```
+
+> **Interpretation**: 0.0 = no association, 0.1 = weak, 0.3 = medium, 0.5+ = strong association.
+
+---
+
+### 3. Distribution
 
 Histogram bin data, skewness, and kurtosis for numeric columns.
 

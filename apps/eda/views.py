@@ -15,6 +15,7 @@ from apps.core.data_engine import (
     eda_outlier_summary,
     eda_pairwise,
     eda_value_counts,
+    eda_categorical_association,
     get_cached_dataframe,
 )
 from apps.datasets.models import Dataset
@@ -107,6 +108,37 @@ class EDAViewSet(viewsets.ViewSet):
         except Exception:
             logger.exception("eda_correlation failed for dataset %s", dataset_id)
             return Response({"detail": "Internal error computing correlation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(data)
+
+    def association(self, request, dataset_id=None):
+        """
+        GET /eda/association/{dataset_id}/
+        Compute Cramér's V for categorical columns.
+        """
+        err, result = _load_df(dataset_id, request)
+        if err:
+            return err
+        df, _ = result
+
+        columns_raw = request.query_params.getlist("columns")
+
+        if columns_raw:
+            col_err, columns = _parse_columns_param(columns_raw, df)
+            if col_err:
+                return Response({"detail": col_err}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            # Default to all non-numeric columns
+            columns = df.select_dtypes(exclude="number").columns.tolist()
+            if not columns:
+                return Response({"detail": "No categorical columns found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Limit to 50 columns for performance
+            columns = columns[:50]
+            data = eda_categorical_association(df, columns)
+        except Exception:
+            logger.exception("eda_categorical_association failed for dataset %s", dataset_id)
+            return Response({"detail": "Internal error computing association."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(data)
 
     def distribution(self, request, dataset_id=None):

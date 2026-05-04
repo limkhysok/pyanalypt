@@ -3,6 +3,7 @@ import logging
 
 import numpy as np
 import pandas as pd
+from scipy.stats import chi2_contingency
 from django.conf import settings
 from django.core.cache import cache
 
@@ -899,6 +900,46 @@ def eda_correlation(df, columns, method="pearson"):
             row[col_col] = None if pd.isna(val) else float(val)
         matrix.append({"column": row_col, "values": row})
     return {"columns": cols, "method": method, "matrix": matrix}
+
+
+def eda_categorical_association(df, columns):
+    """
+    Compute Cramér's V association matrix for categorical columns.
+    Cramér's V ranges from 0 (no association) to 1 (perfect association).
+    """
+    # Ensure we only use categorical/object columns
+    sub = df[columns].astype(str)
+    cols = list(sub.columns)
+    matrix = []
+
+    def _cramers_v(x, y):
+        confusion_matrix = pd.crosstab(x, y)
+        chi2 = chi2_contingency(confusion_matrix)[0]
+        n = confusion_matrix.sum().sum()
+        phi2 = chi2 / n
+        r, k = confusion_matrix.shape
+        phi2corr = max(0, phi2 - ((k - 1) * (r - 1)) / (n - 1))
+        rcorr = r - ((r - 1) ** 2) / (n - 1)
+        kcorr = k - ((k - 1) ** 2) / (n - 1)
+        denom = min((kcorr - 1), (rcorr - 1))
+        if denom == 0:
+            return 0.0
+        return np.sqrt(phi2corr / denom)
+
+    for row_col in cols:
+        row_values = {}
+        for col_col in cols:
+            if row_col == col_col:
+                val = 1.0
+            else:
+                try:
+                    val = round(float(_cramers_v(sub[row_col], sub[col_col])), 4)
+                except Exception:
+                    val = 0.0
+            row_values[col_col] = val
+        matrix.append({"column": row_col, "values": row_values})
+
+    return {"columns": cols, "method": "cramers_v", "matrix": matrix}
 
 
 def eda_distribution(df, columns, bins=20):
